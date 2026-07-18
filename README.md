@@ -99,12 +99,23 @@ trims, cuts, and rotations. Everything is staged: **UNDO**/**RESET** inside the
 editor, and nothing touches the live loop until **APPLY** — which swaps the audio
 in seamlessly without stopping playback.
 
+### TB-303 bass
+
+**303** (top bar, or `B`) opens a TB-303-style acid bass — mono saw/square voice
+into a resonant lowpass with envelope modulation, driven by a 16-step pattern
+locked to the same grid as the drums. One note per step (C2–B3), plus **ACC**
+(accent: louder, brighter, snappier) and **SLD** (slide: glide into the next note
+without retriggering the envelope) rows — the classic acid vocabulary. Knobs:
+waveform, cutoff, resonance, env mod, decay, volume. PLAY starts the pattern (and
+the clock, if needed); placing notes previews them when the pattern isn't running.
+
 ### MIDI sequencer (compose → record)
 
 **SEQ** on any channel opens a piano-roll sequencer (C2–C6, 16th-note grid, 1–8
 bars). Click to place notes (note length + velocity selectable, notes preview as you
 place them), click a note to remove it. The pattern plays out of the *MIDI clock out*
-port on a chosen MIDI channel:
+port on a chosen MIDI channel — or **OMNI**, which broadcasts every note on all 16
+channels so it reaches your synth regardless of which channel it listens on:
 
 - **PREVIEW** loops the pattern to your synth (starts the clock if needed).
 - **⏺ REC LOOP** is the point of it: the pattern plays once from the next bar and the
@@ -138,7 +149,9 @@ this design to a native JUCE app, which would also unlock ASIO latency.
 | `1`–`9` | Main loop button of channel 1–9 |
 | `Shift` + `1`–`9` | Stop that channel |
 | `N` | Add a loop channel |
+| `P` | Play all stopped loops (phase-aligned) |
 | `Space` | Stop all loops (clock keeps running) |
+| `D` | Show/hide the drum machine |
 
 **MIDI controller:** click **MIDI LEARN**, click any control (loop buttons, stop/clear/
 undo, volume sliders, STOP ALL, ADD LOOP), then press a pad/footswitch or turn a knob.

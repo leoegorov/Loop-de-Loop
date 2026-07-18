@@ -10,6 +10,22 @@
 
 <div id="power-overlay">
   <div class="power-box">
+    <svg class="power-logo" viewBox="0 0 106 48" role="img" aria-label="LOOPING logo">
+      <defs>
+        <linearGradient id="power-logo-grad" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stop-color="#1663c7"/>
+          <stop offset="1" stop-color="#48a7f0"/>
+        </linearGradient>
+      </defs>
+      <path d="M14 24 C14 10, 41 10, 53 24 C65 38, 92 38, 92 24 C92 10, 65 10, 53 24 C41 38, 14 38, 14 24 Z"
+            fill="none" stroke="url(#power-logo-grad)" stroke-width="7.5" stroke-linecap="round"/>
+      <polyline points="22,24 27,24 30,18 34,31 37,21 39,24 44,24"
+                fill="none" stroke="url(#power-logo-grad)" stroke-width="2.2"
+                stroke-linecap="round" stroke-linejoin="round"/>
+      <polyline points="62,24 67,24 70,18 74,31 77,21 79,24 84,24"
+                fill="none" stroke="url(#power-logo-grad)" stroke-width="2.2"
+                stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
     <h1>LOOPING</h1>
     <p>Software loop station — MIDI clock out, unlimited loop channels, per-channel FX.</p>
     <button id="power-btn">POWER ON</button>
@@ -18,7 +34,25 @@
 </div>
 
 <header id="topbar" class="hidden">
-  <div class="brand">LOOPING</div>
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 106 48" role="img" aria-label="LOOPING logo">
+      <defs>
+        <linearGradient id="logo-grad" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stop-color="#1663c7"/>
+          <stop offset="1" stop-color="#48a7f0"/>
+        </linearGradient>
+      </defs>
+      <path d="M14 24 C14 10, 41 10, 53 24 C65 38, 92 38, 92 24 C92 10, 65 10, 53 24 C41 38, 14 38, 14 24 Z"
+            fill="none" stroke="url(#logo-grad)" stroke-width="7.5" stroke-linecap="round"/>
+      <polyline points="22,24 27,24 30,18 34,31 37,21 39,24 44,24"
+                fill="none" stroke="url(#logo-grad)" stroke-width="2.2"
+                stroke-linecap="round" stroke-linejoin="round"/>
+      <polyline points="62,24 67,24 70,18 74,31 77,21 79,24 84,24"
+                fill="none" stroke="url(#logo-grad)" stroke-width="2.2"
+                stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <span>LOOPING</span>
+  </div>
 
   <div class="tb-group">
     <label>BPM</label>
@@ -74,7 +108,9 @@
 
   <div class="tb-group buttons">
     <button id="drums-btn" title="Show/hide the 808 drum machine (D)">DRUMS</button>
+    <button id="bass-btn" title="Show/hide the TB-303 bass synth (B)">303</button>
     <button id="midi-learn-btn" title="Toggle MIDI learn mode">MIDI LEARN</button>
+    <button id="playall-btn" data-mappable="global:playAll" title="Resume all stopped loops together (P)">PLAY ALL</button>
     <button id="stopall-btn" data-mappable="global:stopAll">STOP ALL</button>
     <button id="export-btn" data-mappable="global:exportLoops" title="Download all loops as a zip of WAV stems and MIDI files">EXPORT</button>
     <button id="import-btn" title="Load loops from an exported zip or loose .wav/.mid files">IMPORT</button>
@@ -95,19 +131,44 @@
   <div id="drum-grid"></div>
 </section>
 
+<section id="bass-panel" class="hidden">
+  <div class="drum-head">
+    <span class="drum-title bass-title">TB-303 BASS</span>
+    <button id="bass-toggle" data-mappable="global:bass" title="Start/stop the bass pattern (starts the clock if it isn't running)">PLAY</button>
+    <label>Vol</label>
+    <input type="range" id="bass-vol" min="0" max="1.5" step="0.01" value="0.8">
+    <select id="bass-wave" title="Oscillator waveform">
+      <option value="sawtooth" selected>SAW</option>
+      <option value="square">SQR</option>
+    </select>
+    <label>Cutoff</label>
+    <input type="range" id="bass-cutoff" min="100" max="5000" step="1" value="700">
+    <label>Reso</label>
+    <input type="range" id="bass-reso" min="0.5" max="24" step="0.1" value="12">
+    <label>Env</label>
+    <input type="range" id="bass-env" min="0" max="1" step="0.01" value="0.6">
+    <label>Decay</label>
+    <input type="range" id="bass-decay" min="0.03" max="1" step="0.01" value="0.25">
+    <button id="bass-clear" title="Clear the whole pattern">CLEAR</button>
+    <span class="hint">one note per step · ACC = accent · SLD = slide to next note</span>
+  </div>
+  <div id="bass-grid"></div>
+</section>
+
 <main id="channels" class="hidden"></main>
 
 <button id="add-channel" class="hidden" data-mappable="global:addChannel" title="Add a new loop channel (N)">＋ ADD LOOP</button>
 
 <footer id="statusbar" class="hidden">
   <span id="status-text">Ready.</span>
-  <span class="keys">Keys: 1–9 = loop button · Shift+1–9 = stop · N = add loop · Space = stop all</span>
+  <span class="keys">Keys: 1–9 = loop button · Shift+1–9 = stop · N = add loop · P = play all · Space = stop all · D = drums · B = 303</span>
 </footer>
 
 <script src="js/effects.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/midi.js"></script>
 <script src="js/drums.js"></script>
+<script src="js/bass303.js"></script>
 <script src="js/export.js"></script>
 <script src="js/import.js"></script>
 <script src="js/editor.js"></script>

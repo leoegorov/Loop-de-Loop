@@ -681,6 +681,22 @@
   Engine.prototype.stopAll = function () {
     this.channels.forEach(function (c) { c.stop(); });
   };
+  /* Resume every stopped loop, phase-aligned. Starting the transport first makes
+     all of them land on the same boundary instead of trickling in one bar apart. */
+  Engine.prototype.playAll = function () {
+    var t = this.transport;
+    if (!this.channels.some(function (c) { return c.state === 'stopped'; })) return false;
+    if (!t.running) {
+      var f = Math.round(t.nowFrame() + 0.015 * t.sr);
+      t.startAt(f);
+      t.tempoLocked = true;
+      if (this.onTransportStart) this.onTransportStart(f);
+    }
+    this.channels.forEach(function (c) {
+      if (c.state === 'stopped') c.schedule('play');
+    });
+    return true;
+  };
   Engine.prototype.resetAll = function () {
     this.channels.forEach(function (c) { c.clear(); });
     this.transport.stop();

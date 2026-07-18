@@ -5,6 +5,7 @@
   var engine = new window.LooperEngine();
   var midi = null;
   var drums = null;
+  var bass = null;
   var strips = [];           // parallel to engine.channels: { ch, root, els }
   var RING_C = 2 * Math.PI * 50;
 
@@ -28,6 +29,10 @@
     drums = new window.DrumMachine(engine);
     drums.mountUI($('drum-grid'));
     wireDrums();
+
+    bass = new window.Bass303(engine);
+    bass.mountUI($('bass-grid'));
+    wireBass();
 
     try {
       await engine.openInput();
@@ -56,7 +61,7 @@
     requestAnimationFrame(beatLoop);
     setInterval(midiLoopPump, 25);
     setInterval(autoEndWatch, 100);
-    setInterval(function () { drums.pump(); }, 25);
+    setInterval(function () { drums.pump(); bass.pump(); }, 25);
   });
 
   /* ---------------- top bar ---------------- */
@@ -136,6 +141,10 @@
       if (engine.transport.running && this.value) midi.startClock(engine.transport.origin);
     });
 
+    $('playall-btn').addEventListener('click', wrapMappable(function () {
+      status(engine.playAll() ? 'All stopped loops resuming.' : 'No stopped loops to play.');
+    }));
+
     $('stopall-btn').addEventListener('click', wrapMappable(function () {
       engine.stopAll();
       midi.sendStop();
@@ -178,6 +187,11 @@
       if (drums) {
         drums.enabled = false;
         $('drums-toggle').classList.remove('active');
+      }
+      if (bass) {
+        bass.enabled = false;
+        bass.silence();
+        $('bass-toggle').classList.remove('active');
       }
       $('bpm-input').disabled = false;
       status('Reset: loops cleared, tempo unlocked, clock stopped.');
@@ -245,6 +259,45 @@
     });
   }
 
+  /* ---------------- TB-303 bass ---------------- */
+  function toggleBass() {
+    bass.enabled = !bass.enabled;
+    $('bass-toggle').classList.toggle('active', bass.enabled);
+    if (bass.enabled) {
+      var t = engine.transport;
+      if (!t.running) {
+        var f = Math.round(t.nowFrame() + 0.02 * t.sr);
+        t.startAt(f);
+        t.tempoLocked = true;
+        $('bpm-input').disabled = true;
+        midi.startClock(f);
+        status('303 started the clock at ' + t.bpm + ' BPM.');
+      } else {
+        status('303 on.');
+      }
+      $('bass-panel').classList.remove('hidden');
+    } else {
+      status('303 off.');
+    }
+  }
+
+  function wireBass() {
+    $('bass-btn').addEventListener('click', function () {
+      $('bass-panel').classList.toggle('hidden');
+    });
+    $('bass-toggle').addEventListener('click', wrapMappable(function () { toggleBass(); }));
+    $('bass-vol').addEventListener('input', function () { bass.setVolume(parseFloat(this.value)); });
+    $('bass-wave').addEventListener('change', function () { bass.setWave(this.value); });
+    $('bass-cutoff').addEventListener('input', function () { bass.cutoff = parseFloat(this.value); });
+    $('bass-reso').addEventListener('input', function () { bass.setReso(parseFloat(this.value)); });
+    $('bass-env').addEventListener('input', function () { bass.envMod = parseFloat(this.value); });
+    $('bass-decay').addEventListener('input', function () { bass.decay = parseFloat(this.value); });
+    $('bass-clear').addEventListener('click', function () {
+      bass.clearPattern();
+      status('303 pattern cleared.');
+    });
+  }
+
   /* ---------------- MIDI learn plumbing ---------------- */
   function clearArmed() {
     document.querySelectorAll('.learn-armed').forEach(function (el) {
@@ -286,6 +339,8 @@
         if (parts[1] === 'stopAll') { engine.stopAll(); midi.sendStop(); }
         else if (parts[1] === 'addChannel') addChannel();
         else if (parts[1] === 'drums') toggleDrums();
+        else if (parts[1] === 'bass') toggleBass();
+        else if (parts[1] === 'playAll') engine.playAll();
         else if (parts[1] === 'exportLoops') {
           window.LoopExport.exportLoops(engine, strips, status).catch(function (e) {
             status('Export failed: ' + e.message);
@@ -422,6 +477,8 @@
       }
       if (e.code === 'KeyN') { addChannel(); return; }
       if (e.code === 'KeyD') { $('drum-panel').classList.toggle('hidden'); return; }
+      if (e.code === 'KeyB') { $('bass-panel').classList.toggle('hidden'); return; }
+      if (e.code === 'KeyP') { engine.playAll(); return; }
       var m = /^Digit([1-9])$/.exec(e.code);
       if (m) {
         var ch = engine.channels[parseInt(m[1], 10) - 1];
@@ -687,6 +744,7 @@
       led.className = '';
     }
     if (drums) drums.updatePlayhead();
+    if (bass) bass.updatePlayhead();
     requestAnimationFrame(beatLoop);
   }
 })();

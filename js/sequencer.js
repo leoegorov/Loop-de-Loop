@@ -11,6 +11,14 @@
 
   var ui = null;
   var ed = null;        // open editor session { engine, midi, ch, chLabel, pattern, status }
+
+  /* pattern.chan: 0–15 = single MIDI channel, -1 = OMNI (broadcast on all 16) */
+  function patternChans(pattern) {
+    if (pattern.chan >= 0) return [pattern.chan];
+    var all = [];
+    for (var c = 0; c < 16; c++) all.push(c);
+    return all;
+  }
   var sess = null;      // active playback { mode:'preview'|'rec', startF, lenF, endF, schedFrom, closeSent }
   var pumpTimer = null;
   var rafOn = false;
@@ -23,12 +31,15 @@
     var sf = stepFrames(engine);
     var lenF = Math.round(pattern.bars * engine.transport.barFrames());
     var evs = [];
+    var chans = patternChans(pattern);
     pattern.notes.forEach(function (n) {
       var on = Math.round(n.step * sf);
       var off = Math.min(lenF - 10, Math.round((n.step + n.len) * sf) - 10);
       if (on >= lenF) return;
-      evs.push({ off: on, data: [0x90 | pattern.chan, n.pitch, n.vel] });
-      evs.push({ off: Math.max(on + 10, off), data: [0x80 | pattern.chan, n.pitch, 0] });
+      chans.forEach(function (c) {
+        evs.push({ off: on, data: [0x90 | c, n.pitch, n.vel] });
+        evs.push({ off: Math.max(on + 10, off), data: [0x80 | c, n.pitch, 0] });
+      });
     });
     evs.sort(function (a, b) { return a.off - b.off; });
     return evs;
@@ -44,12 +55,16 @@
       if (hi === 0x90 && e.data[2] > 0) {
         open[key] = { off: e.off, vel: e.data[2] };
       } else if ((hi === 0x80 || hi === 0x90) && open[key]) {
-        notes.push({
-          step: Math.round(open[key].off / sf),
-          pitch: pitch,
-          len: Math.max(1, Math.round((e.off - open[key].off) / sf)),
-          vel: open[key].vel
-        });
+        var step = Math.round(open[key].off / sf);
+        var dup = notes.some(function (n) { return n.step === step && n.pitch === pitch; });
+        if (!dup) {   // OMNI patterns carry the same note on all 16 channels — keep one
+          notes.push({
+            step: step,
+            pitch: pitch,
+            len: Math.max(1, Math.round((e.off - open[key].off) / sf)),
+            vel: open[key].vel
+          });
+        }
         delete open[key];
       }
     });
@@ -100,6 +115,10 @@
     document.body.appendChild(overlay);
 
     var chanSel = overlay.querySelector('.seq-chan');
+    var omni = document.createElement('option');
+    omni.value = '-1';
+    omni.textContent = 'OMNI';
+    chanSel.appendChild(omni);
     for (var c = 1; c <= 16; c++) {
       var opt = document.createElement('option');
       opt.value = c - 1;
@@ -173,9 +192,11 @@
   function previewNote(pitch) {
     var out = ed.midi.output;
     if (!out || sess) return;
-    var st = 0x90 | ed.pattern.chan;
-    out.send([st, pitch, parseInt(ui.vel.value, 10)]);
-    out.send([0x80 | ed.pattern.chan, pitch, 0], performance.now() + 150);
+    var vel = parseInt(ui.vel.value, 10);
+    patternChans(ed.pattern).forEach(function (c) {
+      out.send([0x90 | c, pitch, vel]);
+      out.send([0x80 | c, pitch, 0], performance.now() + 150);
+    });
   }
 
   /* ---------------- rendering ---------------- */
@@ -213,7 +234,8 @@
 
     ui.info.textContent = ed.pattern.bars + ' bar' + (ed.pattern.bars > 1 ? 's' : '') +
       ' · ' + ed.engine.transport.bpm.toFixed(1) + ' BPM · ' +
-      ed.pattern.notes.length + ' notes · MIDI ch ' + (ed.pattern.chan + 1);
+      ed.pattern.notes.length + ' notes · MIDI ch ' +
+      (ed.pattern.chan < 0 ? 'OMNI' : ed.pattern.chan + 1);
   }
 
   function playheadLoop() {
@@ -293,9 +315,11 @@
 
   function flushNotes() {
     if (!ed || !ed.midi.output) return;
-    var c = ed.pattern.chan;
-    ed.midi.output.send([0xB0 | c, 123, 0]);
-    ed.midi.output.send([0xB0 | c, 64, 0]);
+    var out = ed.midi.output;
+    patternChans(ed.pattern).forEach(function (c) {
+      out.send([0xB0 | c, 123, 0]);
+      out.send([0xB0 | c, 64, 0]);
+    });
   }
 
   function saveMidi() {
