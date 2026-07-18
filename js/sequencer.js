@@ -1,0 +1,409 @@
+/* MIDI sequencer: piano-roll pattern editor per loop channel. Patterns play out of
+   the selected MIDI port; ⏺ REC LOOP runs the pattern once while the channel records
+   the synth's audio, closing at exactly the pattern length. The pattern is stored as
+   the loop's MIDI events (output muted by default — the audio already has the part). */
+(function () {
+  'use strict';
+
+  var PITCH_MIN = 36, PITCH_MAX = 84;                 // C2..C6
+  var ROWS = PITCH_MAX - PITCH_MIN + 1;
+  var BLACK = { 1: 1, 3: 1, 6: 1, 8: 1, 10: 1 };
+
+  var ui = null;
+  var ed = null;        // open editor session { engine, midi, ch, chLabel, pattern, status }
+  var sess = null;      // active playback { mode:'preview'|'rec', startF, lenF, endF, schedFrom, closeSent }
+  var pumpTimer = null;
+  var rafOn = false;
+
+  /* ---------------- pattern helpers ---------------- */
+  function stepFrames(engine) { return engine.transport.barFrames() / 16; }
+
+  function patternEvents(engine, pattern) {
+    // -> [{ off(frames), data }] sorted, note-offs clamped inside the loop
+    var sf = stepFrames(engine);
+    var lenF = Math.round(pattern.bars * engine.transport.barFrames());
+    var evs = [];
+    pattern.notes.forEach(function (n) {
+      var on = Math.round(n.step * sf);
+      var off = Math.min(lenF - 10, Math.round((n.step + n.len) * sf) - 10);
+      if (on >= lenF) return;
+      evs.push({ off: on, data: [0x90 | pattern.chan, n.pitch, n.vel] });
+      evs.push({ off: Math.max(on + 10, off), data: [0x80 | pattern.chan, n.pitch, 0] });
+    });
+    evs.sort(function (a, b) { return a.off - b.off; });
+    return evs;
+  }
+
+  /* Best-effort conversion of a loop's captured MIDI events into pattern notes. */
+  function eventsToNotes(engine, events) {
+    var sf = stepFrames(engine);
+    var open = {}, notes = [];
+    events.forEach(function (e) {
+      var hi = e.data[0] & 0xF0, pitch = e.data[1];
+      var key = (e.data[0] & 0x0F) + ':' + pitch;
+      if (hi === 0x90 && e.data[2] > 0) {
+        open[key] = { off: e.off, vel: e.data[2] };
+      } else if ((hi === 0x80 || hi === 0x90) && open[key]) {
+        notes.push({
+          step: Math.round(open[key].off / sf),
+          pitch: pitch,
+          len: Math.max(1, Math.round((e.off - open[key].off) / sf)),
+          vel: open[key].vel
+        });
+        delete open[key];
+      }
+    });
+    return notes;
+  }
+
+  function noteAt(pattern, step, pitch) {
+    for (var i = 0; i < pattern.notes.length; i++) {
+      var n = pattern.notes[i];
+      if (n.pitch === pitch && step >= n.step && step < n.step + n.len) return n;
+    }
+    return null;
+  }
+
+  /* ---------------- UI ---------------- */
+  function buildUI() {
+    var overlay = document.createElement('div');
+    overlay.id = 'seq-overlay';
+    overlay.className = 'hidden';
+    overlay.innerHTML =
+      '<div class="editor-box seq-box">' +
+        '<div class="editor-head">' +
+          '<span class="editor-title seq-title">SEQ</span>' +
+          '<span class="editor-info seq-info"></span>' +
+          '<button class="ed-close seq-close" title="Close (pattern is kept on the channel)">✕</button>' +
+        '</div>' +
+        '<div class="editor-row">' +
+          '<label class="seq-l">Bars <select class="seq-bars"><option>1</option><option selected>2</option><option>4</option><option>8</option></select></label>' +
+          '<label class="seq-l">Ch <select class="seq-chan"></select></label>' +
+          '<label class="seq-l">Note <select class="seq-notelen">' +
+            '<option value="1">1/16</option><option value="2" selected>1/8</option>' +
+            '<option value="4">1/4</option><option value="8">1/2</option><option value="16">1 bar</option>' +
+          '</select></label>' +
+          '<label class="seq-l">Vel <input type="range" class="seq-vel" min="1" max="127" step="1" value="100"><span class="seq-vel-val">100</span></label>' +
+          '<label class="chk seq-loopout" title="Keep sending the MIDI pattern every loop cycle after recording (the synth will double the recorded audio)">' +
+            '<input type="checkbox"> loop MIDI out after rec</label>' +
+        '</div>' +
+        '<canvas class="seq-canvas" height="392"></canvas>' +
+        '<div class="editor-row editor-foot">' +
+          '<span class="ed-sel seq-hint">click = add note · click a note = remove</span>' +
+          '<button class="seq-clear">CLEAR</button>' +
+          '<button class="seq-save" title="Write the pattern into the loop\'s MIDI events without recording audio">SAVE MIDI</button>' +
+          '<button class="seq-preview" title="Loop the pattern to the MIDI port (no recording)">PREVIEW</button>' +
+          '<button class="seq-stop">STOP</button>' +
+          '<button class="ed-apply seq-rec" title="Play the pattern once and record the synth into this loop channel">⏺ REC LOOP</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(overlay);
+
+    var chanSel = overlay.querySelector('.seq-chan');
+    for (var c = 1; c <= 16; c++) {
+      var opt = document.createElement('option');
+      opt.value = c - 1;
+      opt.textContent = c;
+      chanSel.appendChild(opt);
+    }
+
+    var canvas = overlay.querySelector('.seq-canvas');
+    ui = {
+      overlay: overlay,
+      canvas: canvas,
+      g: canvas.getContext('2d'),
+      title: overlay.querySelector('.seq-title'),
+      info: overlay.querySelector('.seq-info'),
+      bars: overlay.querySelector('.seq-bars'),
+      chan: chanSel,
+      noteLen: overlay.querySelector('.seq-notelen'),
+      vel: overlay.querySelector('.seq-vel'),
+      velVal: overlay.querySelector('.seq-vel-val'),
+      loopOut: overlay.querySelector('.seq-loopout input')
+    };
+
+    overlay.querySelector('.seq-close').addEventListener('click', close);
+    overlay.addEventListener('click', function (e) { if (e.target === overlay) close(); });
+    document.addEventListener('keydown', function (e) {
+      if (e.code === 'Escape' && !overlay.classList.contains('hidden')) close();
+    });
+
+    ui.vel.addEventListener('input', function () { ui.velVal.textContent = this.value; });
+    ui.bars.addEventListener('change', function () {
+      if (!ed) return;
+      ed.pattern.bars = parseInt(this.value, 10);
+      render();
+    });
+    ui.chan.addEventListener('change', function () {
+      if (ed) ed.pattern.chan = parseInt(this.value, 10);
+    });
+
+    overlay.querySelector('.seq-clear').addEventListener('click', function () {
+      if (!ed) return;
+      ed.pattern.notes = [];
+      render();
+    });
+    overlay.querySelector('.seq-save').addEventListener('click', saveMidi);
+    overlay.querySelector('.seq-preview').addEventListener('click', startPreview);
+    overlay.querySelector('.seq-stop').addEventListener('click', stopPlayback);
+    overlay.querySelector('.seq-rec').addEventListener('click', startBounce);
+
+    canvas.addEventListener('mousedown', function (e) {
+      if (!ed) return;
+      var rect = canvas.getBoundingClientRect();
+      var steps = ed.pattern.bars * 16;
+      var step = Math.floor((e.clientX - rect.left) / rect.width * steps);
+      var pitch = PITCH_MAX - Math.floor((e.clientY - rect.top) / rect.height * ROWS);
+      if (step < 0 || step >= steps || pitch < PITCH_MIN || pitch > PITCH_MAX) return;
+      var hit = noteAt(ed.pattern, step, pitch);
+      if (hit) {
+        ed.pattern.notes.splice(ed.pattern.notes.indexOf(hit), 1);
+      } else {
+        ed.pattern.notes.push({
+          step: step, pitch: pitch,
+          len: parseInt(ui.noteLen.value, 10),
+          vel: parseInt(ui.vel.value, 10)
+        });
+        previewNote(pitch);
+      }
+      render();
+    });
+  }
+
+  function previewNote(pitch) {
+    var out = ed.midi.output;
+    if (!out || sess) return;
+    var st = 0x90 | ed.pattern.chan;
+    out.send([st, pitch, parseInt(ui.vel.value, 10)]);
+    out.send([0x80 | ed.pattern.chan, pitch, 0], performance.now() + 150);
+  }
+
+  /* ---------------- rendering ---------------- */
+  function render() {
+    var c = ui.canvas, g = ui.g;
+    var W = c.width, H = c.height;
+    var steps = ed.pattern.bars * 16;
+    var sw = W / steps, rh = H / ROWS;
+    g.clearRect(0, 0, W, H);
+
+    for (var r = 0; r < ROWS; r++) {
+      var pitch = PITCH_MAX - r;
+      g.fillStyle = BLACK[pitch % 12] ? '#181b20' : '#1f232b';
+      g.fillRect(0, r * rh, W, rh);
+      if (pitch % 12 === 0) {                      // C rows
+        g.fillStyle = 'rgba(77,163,255,0.10)';
+        g.fillRect(0, r * rh, W, rh);
+        g.fillStyle = '#8b93a5';
+        g.font = '9px sans-serif';
+        g.fillText('C' + (pitch / 12 - 1), 2, r * rh + rh - 1);
+      }
+    }
+    for (var s = 0; s <= steps; s++) {
+      g.strokeStyle = s % 16 === 0 ? 'rgba(216,220,230,0.35)' :
+        s % 4 === 0 ? 'rgba(216,220,230,0.15)' : 'rgba(216,220,230,0.06)';
+      g.beginPath();
+      g.moveTo(s * sw + 0.5, 0); g.lineTo(s * sw + 0.5, H);
+      g.stroke();
+    }
+    ed.pattern.notes.forEach(function (n) {
+      var r2 = PITCH_MAX - n.pitch;
+      g.fillStyle = '#4da3ff';
+      g.fillRect(n.step * sw + 1, r2 * rh + 1, n.len * sw - 2, rh - 2);
+    });
+
+    ui.info.textContent = ed.pattern.bars + ' bar' + (ed.pattern.bars > 1 ? 's' : '') +
+      ' · ' + ed.engine.transport.bpm.toFixed(1) + ' BPM · ' +
+      ed.pattern.notes.length + ' notes · MIDI ch ' + (ed.pattern.chan + 1);
+  }
+
+  function playheadLoop() {
+    if (!ed) { rafOn = false; return; }
+    if (sess) {
+      render();
+      var t = ed.engine.transport;
+      var nowF = t.nowFrame();
+      var rel = nowF - sess.startF;
+      if (rel >= 0) {
+        var pos = sess.mode === 'rec' ? rel : rel % sess.lenF;
+        if (pos <= sess.lenF) {
+          var x = pos / sess.lenF * ui.canvas.width;
+          var g = ui.g;
+          g.strokeStyle = '#ffa229';
+          g.lineWidth = 2;
+          g.beginPath(); g.moveTo(x, 0); g.lineTo(x, ui.canvas.height); g.stroke();
+          g.lineWidth = 1;
+        }
+      }
+    }
+    requestAnimationFrame(playheadLoop);
+  }
+
+  /* ---------------- playback / bounce ---------------- */
+  function ensureTransport() {
+    var eng = ed.engine, t = eng.transport;
+    if (!t.running) {
+      var f = Math.round(t.nowFrame() + 0.05 * t.sr);
+      t.startAt(f);
+      t.tempoLocked = true;
+      if (eng.onTransportStart) eng.onTransportStart(f);
+      return f;
+    }
+    t.tempoLocked = true;
+    return t.nextBoundary('bar');
+  }
+
+  function startPreview() {
+    if (!ed || sess) return;
+    if (!ed.midi.output) { ed.status('Select a MIDI clock out port first.'); return; }
+    var startF = ensureTransport();
+    var lenF = Math.round(ed.pattern.bars * ed.engine.transport.barFrames());
+    sess = { mode: 'preview', startF: startF, lenF: lenF, endF: Infinity, schedFrom: null };
+    ed.status('Previewing pattern (looping until STOP).');
+  }
+
+  function startBounce() {
+    if (!ed || sess) return;
+    if (!ed.midi.output) { ed.status('Select a MIDI clock out port first.'); return; }
+    if (ed.ch.state !== 'empty' || ed.ch.pendingAction) {
+      ed.status('Loop ' + ed.chLabel + ' is not empty — CLEAR it first to record the pattern.');
+      return;
+    }
+    if (!ed.pattern.notes.length) { ed.status('The pattern is empty.'); return; }
+    var startF = ensureTransport();
+    var lenF = Math.round(ed.pattern.bars * ed.engine.transport.barFrames());
+    sess = { mode: 'rec', startF: startF, lenF: lenF, endF: startF + lenF, schedFrom: null, closeSent: false };
+    var ch = ed.ch;
+    ch.sawNote = false; ch.lastMidiAbs = 0; ch.lastNoteOnAbs = 0;
+    ch.pendingAction = 'record';
+    ch.node.port.postMessage({ cmd: 'schedule', action: 'record', frame: startF, free: false });
+    if (ch.onUpdate) ch.onUpdate();
+    ed.status('Recording pattern into loop ' + ed.chLabel + ' (' + ed.pattern.bars + ' bars)…');
+  }
+
+  function stopPlayback() {
+    if (!sess) return;
+    flushNotes();
+    if (sess.mode === 'rec' && ed && ed.ch.state !== 'playing') {
+      ed.ch.stop();   // abort the take
+      ed.status('Recording aborted.');
+    }
+    sess = null;
+    if (ed) render();
+  }
+
+  function flushNotes() {
+    if (!ed || !ed.midi.output) return;
+    var c = ed.pattern.chan;
+    ed.midi.output.send([0xB0 | c, 123, 0]);
+    ed.midi.output.send([0xB0 | c, 64, 0]);
+  }
+
+  function saveMidi() {
+    if (!ed) return;
+    if (ed.ch.state === 'empty') { ed.status('No loop on this channel yet — use ⏺ REC LOOP.'); return; }
+    var evs = patternEvents(ed.engine, ed.pattern);
+    var lenF = ed.ch.lenFrames || 1;
+    evs.forEach(function (e) { e.off = ((e.off % lenF) + lenF) % lenF; });
+    evs.sort(function (a, b) { return a.off - b.off; });
+    ed.ch.midiEvents = evs;
+    ed.ch.midiMute = false;
+    if (ed.ch.onUpdate) ed.ch.onUpdate();
+    ed.status('Pattern saved as loop ' + ed.chLabel + ' MIDI (' + evs.length + ' events, output on).');
+  }
+
+  /* Look-ahead pump: schedules pattern events; drives the bounce state machine. */
+  function pump() {
+    if (!ed || !sess) return;
+    var eng = ed.engine, t = eng.transport;
+    var out = ed.midi.output;
+    var sr = t.sr;
+    var nowF = t.nowFrame();
+
+    if (sess.mode === 'rec') {
+      var ch = ed.ch;
+      if (!sess.closeSent && ch.state === 'recording') {
+        ch.closeWithLength(sess.lenF, { noTrim: true });
+        sess.closeSent = true;
+      }
+      if (ch.state === 'playing') {
+        // bounce complete: pattern becomes the loop's MIDI, muted by default
+        ch.midiEvents = patternEvents(eng, ed.pattern);
+        ch.midiMute = !ui.loopOut.checked;
+        ch.seqPattern = ed.pattern;
+        if (ch.onUpdate) ch.onUpdate();
+        ed.status('Loop ' + ed.chLabel + ' recorded from the pattern (' +
+          (ch.midiMute ? 'MIDI output muted — audio has the part' : 'MIDI output looping') + ').');
+        sess = null;
+        render();
+        return;
+      }
+    }
+
+    if (!out) return;
+    var horizon = nowF + 0.15 * sr;
+    var from = sess.schedFrom === null ? nowF : sess.schedFrom;
+    var evs = patternEvents(eng, ed.pattern);
+    evs.forEach(function (ev) {
+      if (sess.mode === 'rec') {
+        var absF = sess.startF + ev.off;
+        if (absF > from && absF <= horizon && absF < sess.endF) {
+          out.send(ev.data, Math.max(performance.now(), eng.frameToPerf(absF)));
+        }
+      } else {
+        var k = Math.floor((from - sess.startF - ev.off) / sess.lenF) + 1;
+        if (k < 0) k = 0;
+        for (var f = sess.startF + ev.off + k * sess.lenF; f <= horizon; f += sess.lenF) {
+          if (f > from) out.send(ev.data, Math.max(performance.now(), eng.frameToPerf(f)));
+        }
+      }
+    });
+    sess.schedFrom = horizon;
+  }
+
+  /* ---------------- entry ---------------- */
+  function open(engine, midiMgr, ch, chLabel, statusFn) {
+    if (!ui) buildUI();
+    if (sess) { statusFn('Sequencer is busy on another channel — STOP it first.'); return; }
+    if (!ch.seqPattern) {
+      ch.seqPattern = {
+        bars: 2,
+        chan: 0,
+        notes: []
+      };
+      if (ch.midiEvents.length) {
+        ch.seqPattern.notes = eventsToNotes(engine, ch.midiEvents);
+        if (ch.lenFrames > 0) {
+          ch.seqPattern.bars = Math.max(1, Math.round(ch.lenFrames / engine.transport.barFrames()));
+        }
+        var st = ch.midiEvents[0] && ch.midiEvents[0].data[0];
+        if (st !== undefined) ch.seqPattern.chan = st & 0x0F;
+      }
+    }
+    ed = { engine: engine, midi: midiMgr, ch: ch, chLabel: chLabel, pattern: ch.seqPattern, status: statusFn };
+    ui.title.textContent = 'SEQ LOOP ' + chLabel;
+    ui.bars.value = String(ed.pattern.bars);
+    if (!ui.bars.value) { ui.bars.value = '2'; ed.pattern.bars = 2; }
+    ui.chan.value = String(ed.pattern.chan);
+    ui.overlay.classList.remove('hidden');
+    ui.canvas.width = ui.canvas.clientWidth || 900;
+    render();
+    if (!pumpTimer) pumpTimer = setInterval(pump, 25);
+    if (!rafOn) { rafOn = true; requestAnimationFrame(playheadLoop); }
+  }
+
+  function close() {
+    if (sess && sess.mode === 'preview') { flushNotes(); sess = null; }
+    // an in-flight bounce keeps running headless; pump() finishes it
+    if (ed && !sess) ed = null;
+    else if (ed && sess) {
+      // keep ed alive for the pump until the bounce lands, but hide the UI
+      var pending = ed;
+      var iv = setInterval(function () {
+        if (!sess) { if (ed === pending) ed = null; clearInterval(iv); }
+      }, 200);
+    }
+    ui.overlay.classList.add('hidden');
+  }
+
+  window.MidiSequencer = { open: open };
+})();

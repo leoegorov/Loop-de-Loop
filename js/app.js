@@ -389,7 +389,7 @@
     strips.forEach(function (s) {
       var ch = s.ch;
       var active = (ch.state === 'playing' || ch.state === 'overdubbing') &&
-        ch.lenFrames > 0 && ch.midiEvents.length > 0 && midi.output;
+        ch.lenFrames > 0 && ch.midiEvents.length > 0 && midi.output && !ch.midiMute;
       if (!active) {
         if (ch.schedFrom !== null) { flushNotes(ch); ch.schedFrom = null; }
         return;
@@ -496,6 +496,8 @@
         '<button class="b-stop">STOP</button>' +
         '<button class="b-undo" disabled>UNDO</button>' +
         '<button class="b-clear">CLEAR</button>' +
+        '<button class="b-edit" disabled title="Open the waveform editor for this loop">EDIT</button>' +
+        '<button class="b-seq" title="Open the MIDI sequencer — compose a pattern, ⏺ records it into this loop">SEQ</button>' +
       '</div>' +
       '<div class="ch-buttons midi-row">' +
         '<button class="b-arm" title="Start recording on the first incoming MIDI note">ARM</button>' +
@@ -522,6 +524,8 @@
       stopBtn: root.querySelector('.b-stop'),
       undoBtn: root.querySelector('.b-undo'),
       clearBtn: root.querySelector('.b-clear'),
+      editBtn: root.querySelector('.b-edit'),
+      seqBtn: root.querySelector('.b-seq'),
       armBtn: root.querySelector('.b-arm'),
       autoBtn: root.querySelector('.b-auto'),
       midiChk: root.querySelector('.midi-rec input'),
@@ -544,6 +548,12 @@
     els.stopBtn.addEventListener('click', wrapMappable(function () { ch.stop(); }));
     els.clearBtn.addEventListener('click', wrapMappable(function () { ch.clear(); refreshStrip(strip); }));
     els.undoBtn.addEventListener('click', wrapMappable(function () { ch.undo(); }));
+    els.editBtn.addEventListener('click', function () {
+      window.WaveEditor.open(engine, ch, strips.indexOf(strip) + 1, status);
+    });
+    els.seqBtn.addEventListener('click', function () {
+      window.MidiSequencer.open(engine, midi, ch, strips.indexOf(strip) + 1, status);
+    });
     els.vol.addEventListener('input', function () { ch.setVolume(parseFloat(this.value)); });
     els.vol.addEventListener('click', wrapMappable(function () {}));
     els.armBtn.addEventListener('click', wrapMappable(function () {
@@ -646,6 +656,7 @@
     if (ch.armed && ch.state === 'empty' && !ch.pendingAction) labelText = 'WAITING FOR NOTE';
     strip.els.label.childNodes[0].textContent = labelText;
     strip.els.undoBtn.disabled = !ch.hasUndo;
+    strip.els.editBtn.disabled = !(ch.state === 'playing' || ch.state === 'stopped');
     strip.els.armBtn.classList.toggle('active', ch.armed);
     strip.els.autoBtn.classList.toggle('active', ch.autoEnd);
     strip.els.midiCount.textContent = ch.midiEvents.length ? '(' + ch.midiEvents.length + ')' : '';

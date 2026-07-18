@@ -245,6 +245,74 @@ body.learn-mode [data-mappable] { outline: 2px dashed var(--queued); outline-off
 }
 #add-channel:hover { filter: brightness(1.15); }
 
+/* ---- waveform editor ---- */
+#editor-overlay {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex; align-items: center; justify-content: center;
+  padding: 1.5rem;
+}
+.editor-box {
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  width: min(64rem, 100%);
+  padding: 0.8rem;
+  display: flex; flex-direction: column; gap: 0.6rem;
+}
+.editor-head { display: flex; align-items: center; gap: 0.8rem; }
+.editor-title { letter-spacing: 0.2em; color: var(--accent); font-size: 0.85rem; font-weight: 600; }
+.editor-info { color: var(--dim); font-size: 0.75rem; flex: 1; }
+.ed-close { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 1.1rem; }
+.ed-close:hover { color: var(--rec); }
+.editor-canvas {
+  width: 100%; height: 170px; display: block;
+  border: 1px solid var(--edge); border-radius: 6px;
+  cursor: crosshair;
+}
+.editor-row { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.editor-row button {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--edge);
+  border-radius: 5px; padding: 0.32rem 0.6rem; cursor: pointer;
+  font-size: 0.7rem; letter-spacing: 0.05em;
+}
+.editor-row button:hover:not(:disabled) { border-color: var(--accent); }
+.editor-row button:disabled { opacity: 0.35; cursor: default; }
+.ed-gain { display: flex; align-items: center; gap: 0.35rem; font-size: 0.7rem; color: var(--dim); margin-left: 0.5rem; }
+.ed-gain input { width: 7rem; accent-color: var(--accent); }
+.ed-gain span { min-width: 3.4rem; text-align: right; font-variant-numeric: tabular-nums; }
+.editor-foot .ed-sel { flex: 1; color: var(--dim); font-size: 0.72rem; }
+.editor-foot .ed-apply {
+  background: var(--accent); color: #04121f; border-color: var(--accent); font-weight: 700;
+}
+.editor-foot .ed-apply:hover { filter: brightness(1.15); }
+
+/* ---- MIDI sequencer ---- */
+#seq-overlay {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex; align-items: center; justify-content: center;
+  padding: 1.5rem;
+}
+.seq-box { width: min(70rem, 100%); }
+.seq-canvas {
+  width: 100%; height: 392px; display: block;
+  border: 1px solid var(--edge); border-radius: 6px;
+  cursor: crosshair; background: #1f232b;
+}
+.seq-l {
+  display: flex; align-items: center; gap: 0.3rem;
+  font-size: 0.7rem; color: var(--dim); text-transform: uppercase;
+}
+.seq-l select {
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--edge); border-radius: 4px; padding: 0.2rem; font-size: 0.75rem;
+}
+.seq-l input[type="range"] { width: 5.5rem; accent-color: var(--accent); }
+.seq-vel-val { min-width: 1.8rem; text-align: right; font-variant-numeric: tabular-nums; }
+.seq-loopout { font-size: 0.72rem; color: var(--dim); margin-left: 0.5rem; }
+.seq-rec { background: var(--rec) !important; color: #fff !important; border-color: var(--rec) !important; }
+
 /* status bar */
 #statusbar {
   display: flex; justify-content: space-between; gap: 1rem;

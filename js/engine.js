@@ -63,6 +63,15 @@
     '      this.pending = null;',
     '      this.state = "stopped";',
     '      this.sendState();',
+    '    } else if (m.cmd === "replace") {',
+    '      if (this.bufL && this.state !== "recording" && this.state !== "overdubbing") {',
+    '        this.bufL = new Float32Array(m.bufL);',
+    '        this.bufR = new Float32Array(m.bufR);',
+    '        this.len = this.bufL.length;',
+    '        this.anchor += (m.anchorDelta || 0);',
+    '        this.undoL = this.undoR = null;',
+    '        this.sendState();',
+    '      }',
     '    } else if (m.cmd === "undo") {',
     '      if (this.undoL && this.bufL && this.state !== "overdubbing") {',
     '        this.bufL.set(this.undoL); this.bufR.set(this.undoR);',
@@ -306,6 +315,8 @@
     this.lastMidiAbs = 0;       // absolute frame of last MIDI activity while recording
     this.lastNoteOnAbs = 0;     // absolute frame of last note-on while recording
     this.midiEvents = [];       // { off: frames-from-loop-start, data: [st,d1,d2] }
+    this.midiMute = false;      // suppress looped MIDI output (e.g. after a sequencer bounce)
+    this.seqPattern = null;     // sequencer pattern for this channel { bars, chan, notes }
     this.pendingMidi = [];      // { f: absolute frame, data } captured while rec/overdub
     this.midiUndo = null;       // snapshot for one-level overdub undo
     this.anchorFrame = 0;
@@ -464,7 +475,7 @@
   /* Close the loop at an exact length. If that point is still in the future the close
      is scheduled normally; if it already passed (auto-end after MIDI silence), the
      worklet closes retroactively and trims the trailing silence. */
-  LoopChannel.prototype.closeWithLength = function (lenFrames) {
+  LoopChannel.prototype.closeWithLength = function (lenFrames, opts) {
     if (this.state !== 'recording') return;
     var eng = this.engine;
     var t = eng.transport;
@@ -480,12 +491,27 @@
     }
     if (eng.perfectLoops) {
       msg.perfect = true;
-      msg.perfectTrim = q === 'off' ||
-        (eng.firstLoopSetsTempo && !eng.transport.tempoLocked);
+      msg.perfectTrim = !(opts && opts.noTrim) && (q === 'off' ||
+        (eng.firstLoopSetsTempo && !eng.transport.tempoLocked));
     }
     this.pendingAction = 'close';
     this.node.port.postMessage(msg);
     if (this.onUpdate) this.onUpdate();
+  };
+
+  /* Write an edited buffer into the live loop (waveform editor APPLY).
+     anchorDelta = frames removed from / rotated past the loop start, so the
+     remaining material keeps its position on the musical grid. */
+  LoopChannel.prototype.applyEdit = function (L, R, anchorDelta, midiEvents) {
+    if (this.state !== 'playing' && this.state !== 'stopped') return false;
+    if (midiEvents) this.midiEvents = midiEvents;
+    this.midiUndo = null;
+    this.hasUndo = false;
+    this.node.port.postMessage(
+      { cmd: 'replace', bufL: L.buffer, bufR: R.buffer, anchorDelta: anchorDelta || 0 },
+      [L.buffer, R.buffer]
+    );
+    return true;
   };
 
   /* Store an incoming MIDI event (absolute frame) while this channel is capturing.

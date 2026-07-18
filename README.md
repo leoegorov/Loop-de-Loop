@@ -87,6 +87,34 @@ MIDI clock. Click steps to toggle, instrument names to preview, per-instrument l
 plus a kit volume. **PLAY** starts the pattern — and starts the clock at the current
 BPM if nothing is running yet, so drums-first jamming works.
 
+### Waveform editor
+
+**EDIT** on any finished loop opens a waveform editor (loop keeps playing while you
+work). Drag on the waveform to select, then: **TRIM** (keep selection), **CUT**,
+**SILENCE**, **FADE IN/OUT**, **REVERSE**, **NORM**alize, **APPLY GAIN** (slider,
+selection or whole loop), and **SET START** (rotate the loop so the selection start
+becomes the loop start — grid alignment is preserved). Bar lines are drawn when a
+tempo grid exists; orange ticks mark captured MIDI notes, and MIDI events follow
+trims, cuts, and rotations. Everything is staged: **UNDO**/**RESET** inside the
+editor, and nothing touches the live loop until **APPLY** — which swaps the audio
+in seamlessly without stopping playback.
+
+### MIDI sequencer (compose → record)
+
+**SEQ** on any channel opens a piano-roll sequencer (C2–C6, 16th-note grid, 1–8
+bars). Click to place notes (note length + velocity selectable, notes preview as you
+place them), click a note to remove it. The pattern plays out of the *MIDI clock out*
+port on a chosen MIDI channel:
+
+- **PREVIEW** loops the pattern to your synth (starts the clock if needed).
+- **⏺ REC LOOP** is the point of it: the pattern plays once from the next bar and the
+  channel records your synth's audio at the same time, closing at exactly the pattern
+  length. The pattern is stored as the loop's MIDI (so it exports), but its output is
+  muted by default since the audio already has the part — tick *loop MIDI out after
+  rec* to keep the synth playing it live every cycle instead.
+- **SAVE MIDI** writes the pattern into an existing loop's MIDI events without
+  recording; opening SEQ on a loop with captured MIDI converts it into editable notes.
+
 ### Export / import
 
 **EXPORT** downloads a zip with one WAV stem + one MIDI file per loop and a
