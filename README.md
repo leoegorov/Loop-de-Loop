@@ -90,7 +90,9 @@ BPM if nothing is running yet, so drums-first jamming works.
 ### Waveform editor
 
 **EDIT** on any finished loop opens a waveform editor (loop keeps playing while you
-work). Drag on the waveform to select, then: **TRIM** (keep selection), **CUT**,
+work). **TRIM SIL** removes leading silence with one click (auto-detected, 5 ms
+pre-roll kept — handy for grid-recorded takes, which Perfect loops deliberately
+leaves untrimmed). Drag on the waveform to select, then: **TRIM** (keep selection), **CUT**,
 **SILENCE**, **FADE IN/OUT**, **REVERSE**, **NORM**alize, **APPLY GAIN** (slider,
 selection or whole loop), and **SET START** (rotate the loop so the selection start
 becomes the loop start — grid alignment is preserved). Bar lines are drawn when a
@@ -112,10 +114,13 @@ the clock, if needed); placing notes previews them when the pattern isn't runnin
 ### MIDI sequencer (compose → record)
 
 **SEQ** on any channel opens a piano-roll sequencer (C2–C6, 16th-note grid, 1–8
-bars). Click to place notes (note length + velocity selectable, notes preview as you
-place them), click a note to remove it. The pattern plays out of the *MIDI clock out*
-port on a chosen MIDI channel — or **OMNI**, which broadcasts every note on all 16
-channels so it reaches your synth regardless of which channel it listens on:
+bars). Click to place notes (they preview as you place them), **drag a note to move
+it** in pitch and time, **drag its right edge to resize** (or keep dragging while
+placing to draw the length), **scroll the wheel over a note to change its velocity**
+(shown as note brightness), and a plain click on a note deletes it. The pattern
+plays out of the *MIDI clock out* port on a chosen MIDI channel — or **OMNI**, which
+broadcasts every note on all 16 channels so it reaches your synth regardless of
+which channel it listens on:
 
 - **PREVIEW** loops the pattern to your synth (starts the clock if needed).
 - **⏺ REC LOOP** is the point of it: the pattern plays once from the next bar and the
@@ -149,8 +154,8 @@ this design to a native JUCE app, which would also unlock ASIO latency.
 | `1`–`9` | Main loop button of channel 1–9 |
 | `Shift` + `1`–`9` | Stop that channel |
 | `N` | Add a loop channel |
-| `P` | Play all stopped loops (phase-aligned) |
-| `Space` | Stop all loops (clock keeps running) |
+| `P` | Play all: stopped loops + the 808 and 303 patterns (phase-aligned) |
+| `Space` | Stop all: loops, drums, and 303 (clock keeps running) |
 | `D` | Show/hide the drum machine |
 
 **MIDI controller:** click **MIDI LEARN**, click any control (loop buttons, stop/clear/

@@ -142,13 +142,11 @@
     });
 
     $('playall-btn').addEventListener('click', wrapMappable(function () {
-      status(engine.playAll() ? 'All stopped loops resuming.' : 'No stopped loops to play.');
+      playEverything();
     }));
 
     $('stopall-btn').addEventListener('click', wrapMappable(function () {
-      engine.stopAll();
-      midi.sendStop();
-      status('All loops stopped (clock keeps running).');
+      stopEverything();
     }));
 
     $('export-btn').addEventListener('click', wrapMappable(function () {
@@ -298,6 +296,41 @@
     });
   }
 
+  /* ---------------- stop all / play all (loops + 808 + 303) ---------------- */
+  function stopEverything() {
+    engine.stopAll();
+    midi.sendStop();
+    if (drums.enabled) {
+      drums.enabled = false;
+      $('drums-toggle').classList.remove('active');
+    }
+    if (bass.enabled) {
+      bass.enabled = false;
+      bass.silence();
+      $('bass-toggle').classList.remove('active');
+    }
+    status('All stopped — loops, drums, 303 (clock keeps running).');
+  }
+
+  function drumsHavePattern() {
+    return Object.keys(drums.pattern).some(function (inst) {
+      return drums.pattern[inst].some(Boolean);
+    });
+  }
+  function bassHasPattern() {
+    return bass.pattern.some(function (st) { return st.pitch !== null; });
+  }
+
+  /* Start everything that has something to play: stopped loops rejoin the grid,
+     and the 808/303 patterns come on (skipped when their grids are empty). */
+  function playEverything() {
+    var started = [];
+    if (engine.playAll()) started.push('loops');
+    if (!drums.enabled && drumsHavePattern()) { toggleDrums(); started.push('drums'); }
+    if (!bass.enabled && bassHasPattern()) { toggleBass(); started.push('303'); }
+    status(started.length ? 'Playing: ' + started.join(', ') + '.' : 'Nothing to play.');
+  }
+
   /* ---------------- MIDI learn plumbing ---------------- */
   function clearArmed() {
     document.querySelectorAll('.learn-armed').forEach(function (el) {
@@ -336,11 +369,11 @@
     midi.dispatch = function (actionId, value) {
       var parts = actionId.split(':');
       if (parts[0] === 'global') {
-        if (parts[1] === 'stopAll') { engine.stopAll(); midi.sendStop(); }
+        if (parts[1] === 'stopAll') stopEverything();
         else if (parts[1] === 'addChannel') addChannel();
         else if (parts[1] === 'drums') toggleDrums();
         else if (parts[1] === 'bass') toggleBass();
-        else if (parts[1] === 'playAll') engine.playAll();
+        else if (parts[1] === 'playAll') playEverything();
         else if (parts[1] === 'exportLoops') {
           window.LoopExport.exportLoops(engine, strips, status).catch(function (e) {
             status('Export failed: ' + e.message);
@@ -471,14 +504,13 @@
       if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
       if (e.code === 'Space') {
         e.preventDefault();
-        engine.stopAll();
-        midi.sendStop();
+        stopEverything();
         return;
       }
       if (e.code === 'KeyN') { addChannel(); return; }
       if (e.code === 'KeyD') { $('drum-panel').classList.toggle('hidden'); return; }
       if (e.code === 'KeyB') { $('bass-panel').classList.toggle('hidden'); return; }
-      if (e.code === 'KeyP') { engine.playAll(); return; }
+      if (e.code === 'KeyP') { playEverything(); return; }
       var m = /^Digit([1-9])$/.exec(e.code);
       if (m) {
         var ch = engine.channels[parseInt(m[1], 10) - 1];

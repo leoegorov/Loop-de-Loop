@@ -23,6 +23,7 @@
         '<canvas class="editor-canvas" height="170"></canvas>' +
         '<div class="editor-row editor-tools">' +
           '<button data-op="trim" title="Keep only the selection; loop start moves to the selection start">TRIM</button>' +
+          '<button data-op="trimsil" title="Auto-remove leading silence (keeps a 5 ms pre-roll); no selection needed">TRIM SIL</button>' +
           '<button data-op="cut" title="Remove the selection and join the remainder">CUT</button>' +
           '<button data-op="silence" title="Silence the selection (MIDI events inside are dropped)">SILENCE</button>' +
           '<button data-op="fadein" title="Fade in across the selection">FADE IN</button>' +
@@ -220,6 +221,29 @@
         .map(function (e) { return { off: e.off - sel.a, data: e.data }; });
       ed.anchorDelta += sel.a;
       ed.len = ed.L.length;
+
+    } else if (op === 'trimsil') {
+      var pk = 0;
+      for (i = 0; i < ed.len; i++) {
+        var pm = Math.max(Math.abs(ed.L[i]), Math.abs(ed.R[i]));
+        if (pm > pk) pk = pm;
+      }
+      if (pk < 0.0001) { if (ed.status) ed.status('The loop is silent — nothing to trim.'); return; }
+      var thr = Math.max(0.003, pk * 0.02);
+      var onset = 0;
+      while (onset < ed.len && Math.abs(ed.L[onset]) < thr && Math.abs(ed.R[onset]) < thr) onset++;
+      var cutTo = Math.max(0, onset - Math.round(ed.sr * 0.005));
+      if (cutTo <= 0) { if (ed.status) ed.status('No leading silence found.'); return; }
+      if (ed.len - cutTo < MIN_LEN) { if (ed.status) ed.status('Loop would get too short.'); return; }
+      pushUndo();
+      ed.L = ed.L.slice(cutTo);
+      ed.R = ed.R.slice(cutTo);
+      ed.midi = ed.midi.map(function (e) {
+        return { off: Math.max(0, e.off - cutTo), data: e.data };
+      });
+      ed.anchorDelta += cutTo;
+      ed.len = ed.L.length;
+      if (ed.status) ed.status('Removed ' + (cutTo / ed.sr).toFixed(2) + 's of leading silence.');
 
     } else if (op === 'cut') {
       sel = needSel('Cut needs a selection.');

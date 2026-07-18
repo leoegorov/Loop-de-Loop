@@ -11,6 +11,7 @@
 
   var ui = null;
   var ed = null;        // open editor session { engine, midi, ch, chLabel, pattern, status }
+  var noteDrag = null;  // { note, mode:'move'|'resize', startStep, startPitch, origStep, origPitch, origLen, moved, created }
 
   /* pattern.chan: 0–15 = single MIDI channel, -1 = OMNI (broadcast on all 16) */
   function patternChans(pattern) {
@@ -104,7 +105,7 @@
         '</div>' +
         '<canvas class="seq-canvas" height="392"></canvas>' +
         '<div class="editor-row editor-foot">' +
-          '<span class="ed-sel seq-hint">click = add note · click a note = remove</span>' +
+          '<span class="ed-sel seq-hint">click = add · drag = move · right edge = resize · click note = delete · wheel = velocity</span>' +
           '<button class="seq-clear">CLEAR</button>' +
           '<button class="seq-save" title="Write the pattern into the loop\'s MIDI events without recording audio">SAVE MIDI</button>' +
           '<button class="seq-preview" title="Loop the pattern to the MIDI port (no recording)">PREVIEW</button>' +
@@ -167,26 +168,109 @@
     overlay.querySelector('.seq-stop').addEventListener('click', stopPlayback);
     overlay.querySelector('.seq-rec').addEventListener('click', startBounce);
 
-    canvas.addEventListener('mousedown', function (e) {
-      if (!ed) return;
+    function canvasPos(e) {
       var rect = canvas.getBoundingClientRect();
       var steps = ed.pattern.bars * 16;
-      var step = Math.floor((e.clientX - rect.left) / rect.width * steps);
-      var pitch = PITCH_MAX - Math.floor((e.clientY - rect.top) / rect.height * ROWS);
-      if (step < 0 || step >= steps || pitch < PITCH_MIN || pitch > PITCH_MAX) return;
-      var hit = noteAt(ed.pattern, step, pitch);
+      var fx = (e.clientX - rect.left) / rect.width * steps;
+      return {
+        stepF: fx,
+        step: Math.floor(fx),
+        pitch: PITCH_MAX - Math.floor((e.clientY - rect.top) / rect.height * ROWS)
+      };
+    }
+
+    function onResizeZone(hit, stepF) {
+      // right edge zone: last 30% of the note (at least half a step)
+      return stepF > hit.step + hit.len - Math.max(0.5, hit.len * 0.3);
+    }
+
+    canvas.addEventListener('mousedown', function (e) {
+      if (!ed) return;
+      var steps = ed.pattern.bars * 16;
+      var p = canvasPos(e);
+      if (p.step < 0 || p.step >= steps || p.pitch < PITCH_MIN || p.pitch > PITCH_MAX) return;
+      var hit = noteAt(ed.pattern, p.step, p.pitch);
       if (hit) {
-        ed.pattern.notes.splice(ed.pattern.notes.indexOf(hit), 1);
+        noteDrag = {
+          note: hit, mode: onResizeZone(hit, p.stepF) ? 'resize' : 'move',
+          startStep: p.step, startPitch: p.pitch,
+          origStep: hit.step, origPitch: hit.pitch, origLen: hit.len,
+          moved: false, created: false
+        };
       } else {
-        ed.pattern.notes.push({
-          step: step, pitch: pitch,
-          len: parseInt(ui.noteLen.value, 10),
+        var n = {
+          step: p.step, pitch: p.pitch,
+          len: Math.min(parseInt(ui.noteLen.value, 10), steps - p.step),
           vel: parseInt(ui.vel.value, 10)
-        });
-        previewNote(pitch);
+        };
+        ed.pattern.notes.push(n);
+        previewNote(p.pitch);
+        // keep dragging right to draw the note longer while placing
+        noteDrag = {
+          note: n, mode: 'resize',
+          startStep: p.step, startPitch: p.pitch,
+          origStep: n.step, origPitch: n.pitch, origLen: n.len,
+          moved: false, created: true
+        };
       }
       render();
     });
+
+    window.addEventListener('mousemove', function (e) {
+      if (!ed) return;
+      var steps = ed.pattern.bars * 16;
+      if (noteDrag) {
+        var p = canvasPos(e);
+        var n = noteDrag.note;
+        if (noteDrag.mode === 'move') {
+          var ns = Math.max(0, Math.min(steps - n.len, noteDrag.origStep + (p.step - noteDrag.startStep)));
+          var np = Math.max(PITCH_MIN, Math.min(PITCH_MAX, noteDrag.origPitch + (p.pitch - noteDrag.startPitch)));
+          if (ns !== n.step || np !== n.pitch) {
+            n.step = ns; n.pitch = np;
+            noteDrag.moved = true;
+            render();
+          }
+        } else {
+          var nl = Math.max(1, Math.min(steps - n.step, Math.round(p.stepF - n.step + 0.5)));
+          if (nl !== n.len) {
+            n.len = nl;
+            noteDrag.moved = true;
+            render();
+          }
+        }
+        return;
+      }
+      // hover cursor feedback
+      var rect = canvas.getBoundingClientRect();
+      if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) return;
+      var hp = canvasPos(e);
+      var hover = (hp.pitch >= PITCH_MIN && hp.pitch <= PITCH_MAX) ? noteAt(ed.pattern, hp.step, hp.pitch) : null;
+      canvas.style.cursor = hover ? (onResizeZone(hover, hp.stepF) ? 'ew-resize' : 'grab') : 'crosshair';
+    });
+
+    window.addEventListener('mouseup', function () {
+      if (!ed || !noteDrag) return;
+      var d = noteDrag;
+      noteDrag = null;
+      if (!d.moved && !d.created && d.mode === 'move') {
+        // plain click on a note: remove it
+        ed.pattern.notes.splice(ed.pattern.notes.indexOf(d.note), 1);
+      } else if (d.moved && d.mode === 'move' && d.note.pitch !== d.origPitch) {
+        previewNote(d.note.pitch);
+      }
+      render();
+    });
+
+    canvas.addEventListener('wheel', function (e) {
+      if (!ed) return;
+      var p = canvasPos(e);
+      var hit = (p.pitch >= PITCH_MIN && p.pitch <= PITCH_MAX) ? noteAt(ed.pattern, p.step, p.pitch) : null;
+      if (!hit) return;
+      e.preventDefault();
+      hit.vel = Math.max(1, Math.min(127, hit.vel + (e.deltaY < 0 ? 5 : -5)));
+      ui.velVal.textContent = hit.vel;
+      render();
+    }, { passive: false });
   }
 
   function previewNote(pitch) {
@@ -228,8 +312,14 @@
     }
     ed.pattern.notes.forEach(function (n) {
       var r2 = PITCH_MAX - n.pitch;
+      var x = n.step * sw + 1, y = r2 * rh + 1;
+      var w = n.len * sw - 2, h = rh - 2;
+      g.globalAlpha = 0.35 + (n.vel / 127) * 0.65;   // velocity = brightness
       g.fillStyle = '#4da3ff';
-      g.fillRect(n.step * sw + 1, r2 * rh + 1, n.len * sw - 2, rh - 2);
+      g.fillRect(x, y, w, h);
+      g.globalAlpha = 1;
+      g.fillStyle = 'rgba(255,255,255,0.45)';        // resize handle
+      g.fillRect(x + w - 3, y, 2, h);
     });
 
     ui.info.textContent = ed.pattern.bars + ' bar' + (ed.pattern.bars > 1 ? 's' : '') +
