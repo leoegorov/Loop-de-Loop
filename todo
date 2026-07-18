@@ -1,0 +1,7 @@
+808 style drums                              [DONE] built-in synthesized 808 kit (kick/snare/hats/clap) + 16-step sequencer, DRUMS button / D key
+vst support                                  [NOT FEASIBLE in browser] no plugin hosting in Web Audio; options: Web Audio Modules (limited catalog) or native JUCE port
+midi pattern generation                      [NEEDS SPEC] what kind? arpeggiator on held notes / euclidean rhythm generator to synth / random variation of captured loops
+beat synced record end possibility per loop  [DONE] per-loop quantize override (Q dropdown in each channel header: glob/bar/beat/off)
+
+import function for audio and midi, compatible with allready exported files from ealrier versions
+                                             [DONE] IMPORT button: reads exported zips (wav+mid+manifest, tempo restored), loose .wav/.mid, deflate zips; loops land stopped, bar-aligned on first play

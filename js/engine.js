@@ -1,0 +1,739 @@
+/* Audio engine: AudioWorklet looper, transport (musical grid), loop channels.
+   Exposes window.Engine (singleton-style class instances created by app.js). */
+(function () {
+  'use strict';
+
+  /* ---------------- worklet processor (runs on the audio thread) ----------------
+     Loaded from a Blob URL so the whole app works from file:// too.
+     Timing model:
+       - "output clock"  = currentFrame (musical grid; playback position).
+       - "input clock"   = currentFrame - comp (compensates round-trip latency so
+         overdubs land where you heard them, not comp frames late).
+     Actions are scheduled at absolute frames; block processing splits at action
+     boundaries, so loop lengths are sample-accurate. */
+  var WORKLET_SOURCE = [
+    'class LooperProcessor extends AudioWorkletProcessor {',
+    '  constructor(options) {',
+    '    super();',
+    '    var o = (options && options.processorOptions) || {};',
+    '    this.comp = o.comp || 0;',
+    '    this.state = "empty";',
+    '    this.pending = null;',
+    '    this.anchor = 0;',
+    '    this.len = 0;',
+    '    this.bufL = null; this.bufR = null;',
+    '    this.undoL = null; this.undoR = null;',
+    '    this.recL = null; this.recR = null; this.recLen = 0;',
+    '    this.recWinStart = Infinity; this.recWinEnd = Infinity;',
+    '    this.writeMode = "set";',
+    '    this.perfectTrim = false;',
+    '    this.perfectAt = Infinity;  // input-clock frame after which the perfect pass may run',
+    '    this.maxFrames = sampleRate * 300;',
+    '    this.blockCount = 0;',
+    '    var self = this;',
+    '    this.port.onmessage = function (e) { self.onMsg(e.data); };',
+    '  }',
+    '  onMsg(m) {',
+    '    if (m.cmd === "schedule") {',
+    '      this.pending = { action: m.action, frame: m.frame, free: !!m.free, len: m.len || 0,',
+    '        perfect: !!m.perfect, perfectTrim: !!m.perfectTrim, anchor: m.anchor || 0 };',
+    '    } else if (m.cmd === "clear") {',
+    '      this.state = "empty"; this.pending = null;',
+    '      this.bufL = this.bufR = this.undoL = this.undoR = null;',
+    '      this.recL = this.recR = null; this.recLen = 0; this.len = 0;',
+    '      this.recWinStart = this.recWinEnd = Infinity;',
+    '      this.perfectAt = Infinity;',
+    '      this.sendState();',
+    '    } else if (m.cmd === "snapshot") {',
+    '      var bufL = this.bufL ? new Float32Array(this.bufL) : null;',
+    '      var bufR = this.bufR ? new Float32Array(this.bufR) : null;',
+    '      this.port.postMessage({',
+    '        ev: "snapshot", reqId: m.reqId, state: this.state, len: this.len, anchor: this.anchor,',
+    '        bufL: bufL ? bufL.buffer : null, bufR: bufR ? bufR.buffer : null',
+    '      }, bufL && bufR ? [bufL.buffer, bufR.buffer] : []);',
+    '    } else if (m.cmd === "load") {',
+    '      this.bufL = new Float32Array(m.bufL);',
+    '      this.bufR = new Float32Array(m.bufR);',
+    '      this.len = this.bufL.length;',
+    '      this.anchor = 0;',
+    '      this.undoL = this.undoR = null;',
+    '      this.recL = this.recR = null; this.recLen = 0;',
+    '      this.recWinStart = this.recWinEnd = Infinity;',
+    '      this.perfectAt = Infinity;',
+    '      this.pending = null;',
+    '      this.state = "stopped";',
+    '      this.sendState();',
+    '    } else if (m.cmd === "undo") {',
+    '      if (this.undoL && this.bufL && this.state !== "overdubbing") {',
+    '        this.bufL.set(this.undoL); this.bufR.set(this.undoR);',
+    '        this.undoL = this.undoR = null;',
+    '        this.port.postMessage({ ev: "undone" });',
+    '      }',
+    '    } else if (m.cmd === "comp") {',
+    '      this.comp = m.value;',
+    '    }',
+    '  }',
+    '  pushRec(a, b) {',
+    '    if (!this.recL) {',
+    '      this.recL = new Float32Array(sampleRate * 8);',
+    '      this.recR = new Float32Array(sampleRate * 8);',
+    '      this.recLen = 0;',
+    '    }',
+    '    if (this.recLen >= this.recL.length) {',
+    '      var nl = new Float32Array(this.recL.length * 2); nl.set(this.recL); this.recL = nl;',
+    '      var nr = new Float32Array(this.recR.length * 2); nr.set(this.recR); this.recR = nr;',
+    '    }',
+    '    this.recL[this.recLen] = a; this.recR[this.recLen] = b; this.recLen++;',
+    '  }',
+    '  apply(a, frame, opt) {',
+    '    var free = opt.free, lenOverride = opt.len;',
+    '    if (a === "record" && this.state === "empty") {',
+    '      this.state = "recording";',
+    '      this.anchor = frame;',
+    '      this.recWinStart = frame; this.recWinEnd = Infinity;',
+    '      this.writeMode = "set";',
+    '      this.recL = null; this.recLen = 0;',
+    '    } else if (a === "close" && this.state === "recording") {',
+    '      var rl = frame - this.anchor;',
+    '      if (lenOverride && lenOverride < rl) rl = lenOverride;  // retroactive close: trim trailing silence',
+    '      if (rl < sampleRate * 0.15) return;',
+    '      this.len = rl;',
+    '      this.recWinEnd = this.anchor + rl;',
+    '      this.bufL = new Float32Array(this.len);',
+    '      this.bufR = new Float32Array(this.len);',
+    '      var n = Math.min(this.recLen, this.len);',
+    '      if (this.recL) {',
+    '        this.bufL.set(this.recL.subarray(0, n));',
+    '        this.bufR.set(this.recR.subarray(0, n));',
+    '      }',
+    '      this.recL = this.recR = null;',
+    '      this.state = "playing";',
+    '      if (opt.perfect) { this.perfectTrim = opt.perfectTrim; this.perfectAt = this.recWinEnd; }',
+    '    } else if (a === "overdub" && this.bufL) {',
+    '      if (this.state === "overdubbing") return;',
+    '      this.undoL = new Float32Array(this.bufL);',
+    '      this.undoR = new Float32Array(this.bufR);',
+    '      this.writeMode = "add";',
+    '      this.recWinStart = frame; this.recWinEnd = Infinity;',
+    '      if (this.state === "stopped" && free) this.anchor = frame;',
+    '      this.state = "overdubbing";',
+    '    } else if (a === "play") {',
+    '      if (this.state === "overdubbing") {',
+    '        this.recWinEnd = frame; this.state = "playing";',
+    '        if (opt.perfect) { this.perfectTrim = false; this.perfectAt = frame; }',
+    '      } else if (this.state === "stopped" && this.bufL) {',
+    '        if (opt.anchor) this.anchor = opt.anchor;',
+    '        else if (free) this.anchor = frame;',
+    '        this.state = "playing";',
+    '      }',
+    '    } else if (a === "stop") {',
+    '      if (this.state === "recording") {',
+    '        this.state = "empty"; this.recL = this.recR = null; this.recLen = 0;',
+    '        this.recWinStart = this.recWinEnd = Infinity;',
+    '      } else if (this.state === "overdubbing") {',
+    '        this.recWinEnd = frame; this.state = "stopped";',
+    '        if (opt.perfect) { this.perfectTrim = false; this.perfectAt = frame; }',
+    '      } else if (this.state === "playing") {',
+    '        this.state = "stopped";',
+    '      }',
+    '    }',
+    '    this.sendState();',
+    '  }',
+    '  sendState(perfected) {',
+    '    this.port.postMessage({ ev: "state", state: this.state, len: this.len, anchor: this.anchor,',
+    '      perfecting: this.perfectAt !== Infinity, perfected: !!perfected });',
+    '  }',
+    '  doPerfect() {',
+    '    if (!this.bufL || this.len < 1) { this.perfectTrim = false; return; }',
+    '    if (this.perfectTrim) {',
+    '      var peak = 0, i;',
+    '      for (i = 0; i < this.len; i++) {',
+    '        var m = Math.max(Math.abs(this.bufL[i]), Math.abs(this.bufR[i]));',
+    '        if (m > peak) peak = m;',
+    '      }',
+    '      var thr = Math.max(0.003, peak * 0.02);',
+    '      var idx = 0;',
+    '      while (idx < this.len && Math.abs(this.bufL[idx]) < thr && Math.abs(this.bufR[idx]) < thr) idx++;',
+    '      var start = Math.max(0, idx - Math.round(sampleRate * 0.005));',
+    '      if (idx < this.len && start > 0 && this.len - start >= sampleRate * 0.15) {',
+    '        this.bufL = this.bufL.slice(start);',
+    '        this.bufR = this.bufR.slice(start);',
+    '        this.anchor += start;',
+    '        this.len -= start;',
+    '        if (this.undoL) { this.undoL = null; this.undoR = null; }',
+    '      }',
+    '      this.perfectTrim = false;',
+    '    }',
+    '    var F = Math.min(Math.round(sampleRate * 0.006), Math.floor(this.len / 8));',
+    '    for (var k = 0; k < F; k++) {',
+    '      var w = 0.5 - 0.5 * Math.cos(Math.PI * k / F);',
+    '      this.bufL[k] *= w; this.bufR[k] *= w;',
+    '      this.bufL[this.len - 1 - k] *= w; this.bufR[this.len - 1 - k] *= w;',
+    '    }',
+    '  }',
+    '  run(inL, inR, outL, outR, from, to, blockStart) {',
+    '    var st = this.state;',
+    '    var playing = (st === "playing" || st === "overdubbing") && this.bufL && this.len > 0;',
+    '    for (var j = from; j < to; j++) {',
+    '      var frame = blockStart + j;',
+    '      var inFrame = frame - this.comp;',
+    '      var a = inL ? inL[j] : 0;',
+    '      var b = inR ? inR[j] : a;',
+    '      if (playing) {',
+    '        var pos = frame - this.anchor;',
+    '        if (pos >= 0) {',
+    '          pos = pos % this.len;',
+    '          outL[j] = this.bufL[pos]; outR[j] = this.bufR[pos];',
+    '        }',
+    '      }',
+    '      if (inFrame >= this.recWinStart && inFrame < this.recWinEnd) {',
+    '        if (!this.bufL) {',
+    '          if (this.recLen < this.maxFrames) this.pushRec(a, b);',
+    '        } else {',
+    '          var wp = inFrame - this.anchor;',
+    '          if (wp >= 0) {',
+    '            wp = wp % this.len;',
+    '            if (this.writeMode === "set") { this.bufL[wp] = a; this.bufR[wp] = b; }',
+    '            else { this.bufL[wp] += a; this.bufR[wp] += b; }',
+    '          }',
+    '        }',
+    '      }',
+    '    }',
+    '  }',
+    '  process(inputs, outputs) {',
+    '    var input = inputs[0];',
+    '    var inL = input && input[0] ? input[0] : null;',
+    '    var inR = input && input[1] ? input[1] : inL;',
+    '    var out = outputs[0];',
+    '    var outL = out[0], outR = out[1] || out[0];',
+    '    var N = outL.length;',
+    '    var blockStart = currentFrame;',
+    '    // run the deferred perfect pass once the latency-compensated tail has arrived',
+    '    if (this.perfectAt !== Infinity && blockStart - this.comp >= this.perfectAt) {',
+    '      this.perfectAt = Infinity;',
+    '      this.doPerfect();',
+    '      this.sendState(true);',
+    '    }',
+    '    var i = 0;',
+    '    while (i < N) {',
+    '      var end = N;',
+    '      if (this.pending) {',
+    '        var f = this.pending.frame;',
+    '        if (f <= blockStart + i) {',
+    '          var p = this.pending; this.pending = null;',
+    '          this.apply(p.action, blockStart + i, p);',
+    '          continue;',
+    '        } else if (f < blockStart + N) {',
+    '          end = f - blockStart;',
+    '        }',
+    '      }',
+    '      this.run(inL, inR, outL, outR, i, end, blockStart);',
+    '      i = end;',
+    '    }',
+    '    this.blockCount++;',
+    '    if (this.blockCount % 10 === 0) {',
+    '      var msg = { ev: "pos", state: this.state, pos: 0, sec: 0, loopSec: this.len / sampleRate };',
+    '      if (this.len > 0) {',
+    '        var pp = (currentFrame - this.anchor) % this.len; if (pp < 0) pp += this.len;',
+    '        msg.pos = pp / this.len;',
+    '      }',
+    '      if (this.state === "recording") msg.sec = this.recLen / sampleRate;',
+    '      this.port.postMessage(msg);',
+    '    }',
+    '    return true;',
+    '  }',
+    '}',
+    'registerProcessor("looper-processor", LooperProcessor);'
+  ].join('\n');
+
+  /* ---------------- transport: musical grid + tempo ---------------- */
+  function Transport(ctx) {
+    this.ctx = ctx;
+    this.sr = ctx.sampleRate;
+    this.bpm = 120;
+    this.running = false;
+    this.origin = 0;          // audio frame of bar 1 beat 1
+    this.tempoLocked = false; // true once loops depend on the grid
+    this.onchange = null;
+  }
+  Transport.prototype.beatFrames = function () { return this.sr * 60 / this.bpm; };
+  Transport.prototype.barFrames = function () { return this.beatFrames() * 4; };
+  Transport.prototype.nowFrame = function () { return this.ctx.currentTime * this.sr; };
+  Transport.prototype.startAt = function (frame) {
+    this.origin = frame;
+    this.running = true;
+    if (this.onchange) this.onchange();
+  };
+  Transport.prototype.stop = function () {
+    this.running = false;
+    this.tempoLocked = false;
+    if (this.onchange) this.onchange();
+  };
+  /* Next grid boundary strictly after "now + safety". Returns 0 for "as soon as possible". */
+  Transport.prototype.nextBoundary = function (kind) {
+    if (kind === 'off' || !this.running) return 0;
+    var unit = kind === 'beat' ? this.beatFrames() : this.barFrames();
+    var now = this.nowFrame() + 0.006 * this.sr;
+    var k = Math.ceil((now - this.origin) / unit);
+    return Math.round(this.origin + k * unit);
+  };
+  /* Current position for UI: { beatInBar, isDownbeat } */
+  Transport.prototype.beatPhase = function () {
+    if (!this.running) return null;
+    var b = (this.nowFrame() - this.origin) / this.beatFrames();
+    if (b < 0) return null;
+    return { beat: Math.floor(b) % 4, phase: b - Math.floor(b) };
+  };
+
+  /* ---------------- loop channel ---------------- */
+  var nextChannelId = 1;
+  var nextSnapshotRequestId = 1;
+  function LoopChannel(engine) {
+    var self = this;
+    this.engine = engine;
+    this.id = nextChannelId++;
+    this.state = 'empty';
+    this.pendingAction = null;  // for UI "queued" indicator
+    this.loopSec = 0;
+    this.pos = 0;
+    this.recSec = 0;
+    this.hasUndo = false;
+    this.quantOverride = 'global'; // per-loop quantize: 'global' | 'bar' | 'beat' | 'off'
+    this.armed = false;         // start recording on first incoming MIDI note
+    this.midiRec = false;       // capture incoming MIDI alongside the audio
+    this.autoEnd = false;       // close the loop after MIDI goes silent while recording
+    this.sawNote = false;       // a note-on arrived since recording started
+    this.lastMidiAbs = 0;       // absolute frame of last MIDI activity while recording
+    this.lastNoteOnAbs = 0;     // absolute frame of last note-on while recording
+    this.midiEvents = [];       // { off: frames-from-loop-start, data: [st,d1,d2] }
+    this.pendingMidi = [];      // { f: absolute frame, data } captured while rec/overdub
+    this.midiUndo = null;       // snapshot for one-level overdub undo
+    this.anchorFrame = 0;
+    this.lenFrames = 0;
+    this.awaitPerfect = false;  // tempo-lock deferred until the perfect pass reports
+    this.loadedNeedsAnchor = false; // imported loop: align to the bar grid on first play
+    this.schedFrom = null;      // MIDI playback: absolute frame scheduled up to
+    this.onUpdate = null;       // UI hook: full state refresh
+    this.onPos = null;          // UI hook: position only
+
+    var ctx = engine.ctx;
+    this.node = new AudioWorkletNode(ctx, 'looper-processor', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+      processorOptions: { comp: engine.compFrames }
+    });
+    this.chainIn = ctx.createGain();
+    this.chainOut = ctx.createGain();
+    this.gain = ctx.createGain();
+    engine.inputNode.connect(this.node);
+    this.node.connect(this.chainIn);
+    this.chainIn.connect(this.chainOut);
+    this.chainOut.connect(this.gain);
+    this.gain.connect(engine.masterGain);
+    this.fx = []; // { key, def, inst, values }
+
+    this.node.port.onmessage = function (e) {
+      var m = e.data;
+      if (m.ev === 'state') {
+        var prev = self.state;
+        self.state = m.state;
+        self.pendingAction = null;
+        self.loopSec = m.len / engine.ctx.sampleRate;
+        self.anchorFrame = m.anchor;
+        self.lenFrames = m.len;
+        if (prev === 'recording' && m.state === 'playing') {
+          if (m.perfecting) {
+            // perfect pass may still trim the start — wait for the corrected
+            // length/anchor before locking tempo and placing MIDI events
+            self.awaitPerfect = true;
+          } else {
+            self.finalizePendingMidi();
+            engine.onLoopClosed(self, m.len, m.anchor);
+          }
+        }
+        if (m.perfected && self.awaitPerfect) {
+          self.awaitPerfect = false;
+          self.finalizePendingMidi();
+          engine.onLoopClosed(self, m.len, m.anchor);
+        }
+        if (prev !== 'overdubbing' && m.state === 'overdubbing') {
+          self.midiUndo = self.midiEvents.slice();
+          self.hasUndo = true;
+        }
+        if (prev === 'overdubbing' && m.state !== 'overdubbing') {
+          self.finalizePendingMidi();
+        }
+        if (m.state === 'empty') {
+          self.hasUndo = false;
+          self.awaitPerfect = false;
+          self.midiEvents = []; self.pendingMidi = []; self.midiUndo = null;
+        }
+        if (self.onUpdate) self.onUpdate();
+      } else if (m.ev === 'pos') {
+        self.pos = m.pos;
+        self.recSec = m.sec;
+        self.loopSec = m.loopSec || self.loopSec;
+        if (self.onPos) self.onPos();
+      } else if (m.ev === 'undone') {
+        self.hasUndo = false;
+        if (self.midiUndo) { self.midiEvents = self.midiUndo; self.midiUndo = null; }
+        if (self.onUpdate) self.onUpdate();
+      }
+    };
+  }
+
+  LoopChannel.prototype.requestSnapshot = function () {
+    var self = this;
+    var reqId = nextSnapshotRequestId++;
+    return new Promise(function (resolve) {
+      var handler = function (e) {
+        var m = e.data;
+        if (!m || m.ev !== 'snapshot' || m.reqId !== reqId) return;
+        self.node.port.removeEventListener('message', handler);
+        resolve(m);
+      };
+      self.node.port.addEventListener('message', handler);
+      if (self.node.port.start) self.node.port.start();
+      self.node.port.postMessage({ cmd: 'snapshot', reqId: reqId });
+    });
+  };
+
+  LoopChannel.prototype.schedule = function (action) {
+    var eng = this.engine;
+    var frame = eng.frameForAction(this, action);
+    var q = eng.effQuantize(this);
+    var free = q === 'off';
+    if (action === 'record') {
+      this.sawNote = false;
+      this.lastMidiAbs = 0;
+      this.lastNoteOnAbs = 0;
+    }
+    // kept even for immediate actions (until the worklet confirms) so MIDI capture
+    // doesn't drop events arriving in the scheduling gap — e.g. the arm-trigger note
+    this.pendingAction = action;
+    var msg = { cmd: 'schedule', action: action, frame: frame, free: free };
+    if (eng.perfectLoops) {
+      if (action === 'close') {
+        msg.perfect = true;
+        // length may only change when it isn't grid-locked
+        msg.perfectTrim = q === 'off' ||
+          (eng.firstLoopSetsTempo && !eng.transport.tempoLocked);
+      } else if ((action === 'play' || action === 'stop') && this.state === 'overdubbing') {
+        msg.perfect = true;   // re-fade the seam after an overdub layer
+      }
+    }
+    if (action === 'play' && this.loadedNeedsAnchor) {
+      // first play of an imported loop: anchor it to the current bar grid
+      var t2 = eng.transport;
+      if (t2.running || frame > 0) {
+        var bf = t2.barFrames();
+        var base = frame > 0 ? frame :
+          t2.origin + Math.floor((t2.nowFrame() - t2.origin) / bf) * bf;
+        msg.anchor = Math.round(base);
+      }
+      this.loadedNeedsAnchor = false;
+    }
+    this.node.port.postMessage(msg);
+    if (this.onUpdate) this.onUpdate();
+  };
+
+  /* The one big button: empty→record, recording→close, playing→overdub, overdubbing→play, stopped→play */
+  LoopChannel.prototype.mainAction = function () {
+    switch (this.pendingAction || this.state) {
+      case 'empty': this.schedule('record'); break;
+      case 'record':
+      case 'recording': this.schedule('close'); break;
+      case 'playing': this.schedule('overdub'); break;
+      case 'overdub':
+      case 'overdubbing': this.schedule('play'); break;
+      case 'stopped': this.schedule('play'); break;
+    }
+  };
+  LoopChannel.prototype.stop = function () {
+    if (this.state === 'empty' && !this.pendingAction) return;
+    this.schedule('stop');
+  };
+  LoopChannel.prototype.clear = function () {
+    this.node.port.postMessage({ cmd: 'clear' });
+    this.pendingAction = null;
+    this.armed = false;
+    this.midiEvents = []; this.pendingMidi = []; this.midiUndo = null;
+  };
+
+  /* Close the loop at an exact length. If that point is still in the future the close
+     is scheduled normally; if it already passed (auto-end after MIDI silence), the
+     worklet closes retroactively and trims the trailing silence. */
+  LoopChannel.prototype.closeWithLength = function (lenFrames) {
+    if (this.state !== 'recording') return;
+    var eng = this.engine;
+    var t = eng.transport;
+    lenFrames = Math.round(lenFrames);
+    var q = eng.effQuantize(this);
+    var closeFrame = Math.round(this.anchorFrame + lenFrames);
+    var msg = { cmd: 'schedule', action: 'close', free: q === 'off' };
+    if (closeFrame > t.nowFrame() + 0.01 * t.sr) {
+      msg.frame = closeFrame;
+    } else {
+      msg.frame = 0;
+      msg.len = lenFrames;
+    }
+    if (eng.perfectLoops) {
+      msg.perfect = true;
+      msg.perfectTrim = q === 'off' ||
+        (eng.firstLoopSetsTempo && !eng.transport.tempoLocked);
+    }
+    this.pendingAction = 'close';
+    this.node.port.postMessage(msg);
+    if (this.onUpdate) this.onUpdate();
+  };
+
+  /* Store an incoming MIDI event (absolute frame) while this channel is capturing.
+     pendingAction === 'record' counts too, so the arm-trigger note itself is kept. */
+  LoopChannel.prototype.captureMidi = function (data, absFrame) {
+    if (!this.midiRec) return;
+    var capturing = this.state === 'recording' || this.state === 'overdubbing' ||
+      this.pendingAction === 'record' || this.pendingAction === 'overdub';
+    if (!capturing) return;
+    this.pendingMidi.push({ f: absFrame, data: data });
+  };
+
+  /* Convert captured absolute-frame events to loop offsets once anchor/len are known. */
+  LoopChannel.prototype.finalizePendingMidi = function () {
+    var anchor = this.anchorFrame, len = this.lenFrames;
+    var slack = this.engine.ctx.sampleRate * 0.05;
+    for (var i = 0; i < this.pendingMidi.length; i++) {
+      var ev = this.pendingMidi[i];
+      var off = ev.f - anchor;
+      if (off < -slack) continue;      // stray event from well before the loop started
+      if (off < 0) off = 0;            // arm-trigger note lands on the downbeat
+      if (len > 0) off = off % len;
+      this.midiEvents.push({ off: off, data: ev.data });
+    }
+    this.midiEvents.sort(function (a, b) { return a.off - b.off; });
+    this.pendingMidi = [];
+  };
+
+  /* MIDI channels used by captured events (for all-notes-off flushing). */
+  LoopChannel.prototype.usedMidiChannels = function () {
+    var set = {};
+    this.midiEvents.forEach(function (e) { set[e.data[0] & 0x0F] = true; });
+    return Object.keys(set).map(Number);
+  };
+  LoopChannel.prototype.undo = function () {
+    this.node.port.postMessage({ cmd: 'undo' });
+  };
+  LoopChannel.prototype.setVolume = function (v) {
+    this.gain.gain.setTargetAtTime(v, this.engine.ctx.currentTime, 0.01);
+  };
+  LoopChannel.prototype.setComp = function (frames) {
+    this.node.port.postMessage({ cmd: 'comp', value: frames });
+  };
+
+  LoopChannel.prototype.addFx = function (key) {
+    var def = window.FX_DEFS[key];
+    if (!def) return null;
+    var inst = def.build(this.engine.ctx);
+    var values = {};
+    def.params.forEach(function (p) { values[p.id] = p.def; inst.set(p.id, p.def); });
+    var entry = { key: key, def: def, inst: inst, values: values };
+    this.fx.push(entry);
+    this.rebuildChain();
+    return entry;
+  };
+  LoopChannel.prototype.removeFx = function (entry) {
+    var i = this.fx.indexOf(entry);
+    if (i < 0) return;
+    this.fx.splice(i, 1);
+    this.rebuildChain();
+    entry.inst.dispose();
+  };
+  LoopChannel.prototype.rebuildChain = function () {
+    this.chainIn.disconnect();
+    this.fx.forEach(function (e) { e.inst.output.disconnect(); });
+    var prev = this.chainIn;
+    for (var i = 0; i < this.fx.length; i++) {
+      prev.connect(this.fx[i].inst.input);
+      prev = this.fx[i].inst.output;
+    }
+    prev.connect(this.chainOut);
+  };
+  LoopChannel.prototype.destroy = function () {
+    this.node.port.postMessage({ cmd: 'clear' });
+    try { this.engine.inputNode.disconnect(this.node); } catch (e) {}
+    this.node.disconnect();
+    this.fx.forEach(function (e) { e.inst.dispose(); });
+    this.chainIn.disconnect();
+    this.chainOut.disconnect();
+    this.gain.disconnect();
+  };
+
+  /* ---------------- engine ---------------- */
+  function Engine() {
+    this.ctx = null;
+    this.transport = null;
+    this.channels = [];
+    this.quantize = 'bar';
+    this.firstLoopSetsTempo = true;
+    this.perfectLoops = true; // auto-trim leading silence + de-click loop seams
+    this.autoEndSec = 2;      // MIDI-silence timeout for channels with AUTO enabled
+    this.compFrames = 0;
+    this.inputNode = null;    // all channel worklets read from here
+    this.monitorGain = null;
+    this.masterGain = null;
+    this.mediaStream = null;
+    this.sourceNode = null;
+    this.onTempoLocked = null;   // (bpm) -> void
+    this.onTransportStart = null; // (originFrame) -> void
+  }
+
+  Engine.prototype.init = async function () {
+    this.ctx = new AudioContext({ latencyHint: 'interactive' });
+    await this.ctx.resume();
+    var blob = new Blob([WORKLET_SOURCE], { type: 'application/javascript' });
+    var url = URL.createObjectURL(blob);
+    await this.ctx.audioWorklet.addModule(url);
+
+    this.transport = new Transport(this.ctx);
+    this.inputNode = this.ctx.createGain();
+    this.masterGain = this.ctx.createGain();
+    this.monitorGain = this.ctx.createGain();
+    this.monitorGain.gain.value = 0;
+    this.inputNode.connect(this.monitorGain);
+    this.monitorGain.connect(this.masterGain);
+    this.masterGain.connect(this.ctx.destination);
+
+    // default latency compensation guess: output latency + ~10 ms input
+    var outLat = this.ctx.outputLatency || this.ctx.baseLatency || 0;
+    this.compFrames = Math.round((outLat + 0.010) * this.ctx.sampleRate);
+  };
+
+  Engine.prototype.openInput = async function (deviceId) {
+    var constraints = {
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+        channelCount: { ideal: 2 }   // use both interface inputs as a stereo pair
+      }
+    };
+    if (deviceId) constraints.audio.deviceId = { exact: deviceId };
+    var stream = await navigator.mediaDevices.getUserMedia(constraints);
+    if (this.sourceNode) { this.sourceNode.disconnect(); }
+    if (this.mediaStream) { this.mediaStream.getTracks().forEach(function (t) { t.stop(); }); }
+    this.mediaStream = stream;
+    this.sourceNode = this.ctx.createMediaStreamSource(stream);
+    this.sourceNode.connect(this.inputNode);
+    var track = stream.getAudioTracks()[0];
+    var settings = track && track.getSettings ? track.getSettings() : {};
+    this.inputChannels = settings.channelCount || this.sourceNode.channelCount || 1;
+    return stream;
+  };
+
+  Engine.prototype.setMonitor = function (on) {
+    this.monitorGain.gain.setTargetAtTime(on ? 1 : 0, this.ctx.currentTime, 0.01);
+  };
+  Engine.prototype.setMasterVolume = function (v) {
+    this.masterGain.gain.setTargetAtTime(v, this.ctx.currentTime, 0.01);
+  };
+  Engine.prototype.setComp = function (ms) {
+    this.compFrames = Math.round(ms / 1000 * this.ctx.sampleRate);
+    this.channels.forEach(function (c) { c.setComp(this.compFrames); }, this);
+  };
+
+  Engine.prototype.addChannel = function () {
+    var ch = new LoopChannel(this);
+    this.channels.push(ch);
+    return ch;
+  };
+  Engine.prototype.removeChannel = function (ch) {
+    var i = this.channels.indexOf(ch);
+    if (i < 0) return;
+    this.channels.splice(i, 1);
+    ch.destroy();
+  };
+  Engine.prototype.stopAll = function () {
+    this.channels.forEach(function (c) { c.stop(); });
+  };
+  Engine.prototype.resetAll = function () {
+    this.channels.forEach(function (c) { c.clear(); });
+    this.transport.stop();
+  };
+
+  /* Effective quantize for a channel: its own override, else the global setting. */
+  Engine.prototype.effQuantize = function (channel) {
+    if (channel && channel.quantOverride && channel.quantOverride !== 'global') {
+      return channel.quantOverride;
+    }
+    return this.quantize;
+  };
+
+  /* Decide the absolute frame at which an action should fire (0 = asap). */
+  Engine.prototype.frameForAction = function (channel, action) {
+    var t = this.transport;
+    var q = this.effQuantize(channel);
+    if (action === 'record') {
+      // first loop in "sets tempo" mode records free
+      if (this.firstLoopSetsTempo && !t.tempoLocked) return 0;
+      if (!t.running) {
+        var f = Math.round(t.nowFrame() + 0.01 * t.sr);
+        t.startAt(f);
+        t.tempoLocked = true;
+        if (this.onTransportStart) this.onTransportStart(f);
+        return f;
+      }
+      return t.nextBoundary(q);
+    }
+    if (action === 'close' && this.firstLoopSetsTempo && !t.tempoLocked) return 0;
+    if (action === 'play' && !t.running) {
+      // playing an imported loop can be what starts the clock
+      var f2 = Math.round(t.nowFrame() + 0.01 * t.sr);
+      t.startAt(f2);
+      t.tempoLocked = true;
+      if (this.onTransportStart) this.onTransportStart(f2);
+      return f2;
+    }
+    return t.nextBoundary(q);
+  };
+
+  /* Called when a channel's loop closes (recording -> playing). */
+  Engine.prototype.onLoopClosed = function (channel, lenFrames, anchorFrame) {
+    var t = this.transport;
+    if (this.firstLoopSetsTempo && !t.tempoLocked) {
+      var sec = lenFrames / t.sr;
+      var best = null;
+      [1, 2, 4, 8, 16].forEach(function (bars) {
+        var bpm = bars * 4 * 60 / sec;
+        var score = Math.abs(Math.log(bpm / 115));
+        if (bpm < 50 || bpm > 220) score += 10;
+        if (!best || score < best.score) best = { bpm: bpm, score: score };
+      });
+      t.bpm = Math.round(best.bpm * 10) / 10;
+      t.startAt(anchorFrame);
+      t.tempoLocked = true;
+      if (this.onTempoLocked) this.onTempoLocked(t.bpm, anchorFrame);
+    }
+  };
+
+  /* Map a performance.now() timestamp to an audio frame (for capturing MIDI input). */
+  Engine.prototype.perfToFrame = function (perf) {
+    var ctx = this.ctx;
+    var ts = ctx.getOutputTimestamp ? ctx.getOutputTimestamp() : null;
+    if (ts && ts.contextTime !== undefined && ts.performanceTime !== undefined) {
+      return (ts.contextTime + (perf - ts.performanceTime) / 1000) * ctx.sampleRate;
+    }
+    return (ctx.currentTime + (perf - performance.now()) / 1000) * ctx.sampleRate;
+  };
+
+  /* Map an audio frame to a performance.now() timestamp (for Web MIDI scheduling). */
+  Engine.prototype.frameToPerf = function (frame) {
+    var ctx = this.ctx;
+    var ts = ctx.getOutputTimestamp ? ctx.getOutputTimestamp() : null;
+    if (ts && ts.contextTime !== undefined && ts.performanceTime !== undefined) {
+      return ts.performanceTime + (frame / ctx.sampleRate - ts.contextTime) * 1000;
+    }
+    return performance.now() + (frame / ctx.sampleRate - ctx.currentTime) * 1000;
+  };
+
+  window.LooperEngine = Engine;
+})();

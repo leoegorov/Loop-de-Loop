@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LOOPING — software loop station</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<div id="power-overlay">
+  <div class="power-box">
+    <h1>LOOPING</h1>
+    <p>Software loop station — MIDI clock out, unlimited loop channels, per-channel FX.</p>
+    <button id="power-btn">POWER ON</button>
+    <p class="hint">Grants microphone + MIDI access. Use Chrome or Edge.</p>
+  </div>
+</div>
+
+<header id="topbar" class="hidden">
+  <div class="brand">LOOPING</div>
+
+  <div class="tb-group">
+    <label>BPM</label>
+    <input type="number" id="bpm-input" min="40" max="240" step="0.1" value="120">
+    <div id="beat-led" title="Beat"></div>
+  </div>
+
+  <div class="tb-group">
+    <label>Quantize</label>
+    <select id="quantize-select">
+      <option value="bar" selected>Bar</option>
+      <option value="beat">Beat</option>
+      <option value="off">Off</option>
+    </select>
+  </div>
+
+  <div class="tb-group">
+    <label class="chk"><input type="checkbox" id="first-loop-tempo" checked> 1st loop sets tempo</label>
+  </div>
+
+  <div class="tb-group">
+    <label class="chk" title="On close: trim leading silence (free-length loops) and crossfade the loop seam so it never clicks"><input type="checkbox" id="perfect-loops" checked> Perfect loops</label>
+  </div>
+
+  <div class="tb-group">
+    <label>Audio in</label>
+    <select id="input-select"></select>
+    <label class="chk"><input type="checkbox" id="monitor-toggle"> Monitor</label>
+  </div>
+
+  <div class="tb-group">
+    <label>MIDI clock out</label>
+    <select id="midiout-select"><option value="">— none —</option></select>
+    <span id="clock-led" title="MIDI clock running"></span>
+  </div>
+
+  <div class="tb-group">
+    <label>Comp</label>
+    <input type="number" id="comp-input" min="0" max="200" step="1" value="0" title="Overdub latency compensation (ms)">
+    <span class="unit">ms</span>
+  </div>
+
+  <div class="tb-group">
+    <label>Auto-end</label>
+    <input type="number" id="autoend-input" min="0.3" max="10" step="0.1" value="2" title="Close recording after this many seconds of MIDI silence (channels with AUTO on)">
+    <span class="unit">s</span>
+  </div>
+
+  <div class="tb-group">
+    <label>Master</label>
+    <input type="range" id="master-vol" min="0" max="1.5" step="0.01" value="1">
+  </div>
+
+  <div class="tb-group buttons">
+    <button id="drums-btn" title="Show/hide the 808 drum machine (D)">DRUMS</button>
+    <button id="midi-learn-btn" title="Toggle MIDI learn mode">MIDI LEARN</button>
+    <button id="stopall-btn" data-mappable="global:stopAll">STOP ALL</button>
+    <button id="export-btn" data-mappable="global:exportLoops" title="Download all loops as a zip of WAV stems and MIDI files">EXPORT</button>
+    <button id="import-btn" title="Load loops from an exported zip or loose .wav/.mid files">IMPORT</button>
+    <input type="file" id="import-file" accept=".zip,.wav,.mid,.midi" multiple style="display:none">
+    <button id="reset-btn" title="Clear all loops, unlock tempo, stop clock">RESET</button>
+  </div>
+</header>
+
+<section id="drum-panel" class="hidden">
+  <div class="drum-head">
+    <span class="drum-title">808 DRUMS</span>
+    <button id="drums-toggle" data-mappable="global:drums" title="Start/stop the drum pattern (starts the clock if it isn't running)">PLAY</button>
+    <label>Vol</label>
+    <input type="range" id="drums-vol" min="0" max="1.5" step="0.01" value="0.9">
+    <button id="drums-clear" title="Clear the whole pattern">CLEAR</button>
+    <span class="hint">16ths of the master bar · click instrument names to preview</span>
+  </div>
+  <div id="drum-grid"></div>
+</section>
+
+<main id="channels" class="hidden"></main>
+
+<button id="add-channel" class="hidden" data-mappable="global:addChannel" title="Add a new loop channel (N)">＋ ADD LOOP</button>
+
+<footer id="statusbar" class="hidden">
+  <span id="status-text">Ready.</span>
+  <span class="keys">Keys: 1–9 = loop button · Shift+1–9 = stop · N = add loop · Space = stop all</span>
+</footer>
+
+<script src="js/effects.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/midi.js"></script>
+<script src="js/drums.js"></script>
+<script src="js/export.js"></script>
+<script src="js/import.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
