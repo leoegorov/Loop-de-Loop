@@ -470,6 +470,16 @@
         out = out.concat(prizm.fxRack.songAutomationTracks('PRIZM'));
         return out;
       },
+      automationCandidates: function () {
+        var out = [];
+        strips.forEach(function (s, i) {
+          out = out.concat(s.ch.rack.songAutomationCandidates('LOOP ' + (i + 1)));
+        });
+        out = out.concat(drums.fxRack.songAutomationCandidates('DRUMS'));
+        out = out.concat(bass.fxRack.songAutomationCandidates('303'));
+        out = out.concat(prizm.fxRack.songAutomationCandidates('PRIZM'));
+        return out;
+      },
       setDrums: setDrumsOn,
       setBass: setBassOn,
       status: status

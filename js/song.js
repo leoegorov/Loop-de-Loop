@@ -14,11 +14,16 @@
   var tracks = [];          // [{ key, label, kind, color, cells:Uint8Array, gate, ch }]
   var savedCells = {};      // key -> Uint8Array, persists across opens
   var bars = 32;
+  var paintKind = 'audio';
   var playing = false;
   var startF = 0;
   var loopSong = false;
   var passTimer = null;
   var rafOn = false;
+  var autoTimer = null;
+  var AUTO_MS = 40;
+  var autoBaseF = null;
+  var autoOrigin = null;
 
   /* ---------------- tracks ---------------- */
   function cellsFor(key) {
@@ -88,10 +93,12 @@
         '</select></label>' +
         '<button class="song-play">▶ PLAY SONG</button>' +
         '<button class="song-stop">■ STOP</button>' +
+        '<button class="song-add-auto" title="Create a new automation loop lane from an FX parameter">+ AUTO LOOP</button>' +
+        '<label>Paint <select class="song-kind"><option value="audio" selected>audio</option><option value="auto">automation</option><option value="all">all</option></select></label>' +
         '<label class="chk"><input type="checkbox" class="song-loop"> loop song</label>' +
         '<button class="song-clear">CLEAR</button>' +
         '<span class="song-zoom"><button class="song-zo" title="Smaller">–</button><button class="song-zi" title="Bigger">+</button></span>' +
-        '<span class="hint">paint bars per track · audio loops, automation clips, and drums/303 pattern swaps stay bar-locked</span>' +
+        '<span class="hint">choose Paint mode to edit audio or automation clips · use + AUTO LOOP to create automation lanes</span>' +
       '</div>' +
       '<div class="song-scroll"><canvas class="song-canvas"></canvas></div>';
     document.body.insertBefore(panel, document.getElementById('channels'));
@@ -102,7 +109,8 @@
       canvas: canvas,
       g: canvas.getContext('2d'),
       bars: panel.querySelector('.song-bars'),
-      loop: panel.querySelector('.song-loop')
+      loop: panel.querySelector('.song-loop'),
+      kind: panel.querySelector('.song-kind')
     };
 
     ui.bars.addEventListener('change', function () {
@@ -112,6 +120,7 @@
       render();
     });
     ui.loop.addEventListener('change', function () { loopSong = this.checked; });
+    ui.kind.addEventListener('change', function () { paintKind = this.value; render(); });
     function zoom(delta) {
       CELL_W = Math.max(10, Math.min(48, CELL_W + delta));
       ROW_H = Math.max(18, Math.min(52, ROW_H + delta));
@@ -121,6 +130,7 @@
     panel.querySelector('.song-zi').addEventListener('click', function () { zoom(4); });
     panel.querySelector('.song-play').addEventListener('click', play);
     panel.querySelector('.song-stop').addEventListener('click', stop);
+    panel.querySelector('.song-add-auto').addEventListener('click', addAutomationLoop);
     panel.querySelector('.song-clear').addEventListener('click', function () {
       tracks.forEach(function (t) { t.cells.fill(0); });
       render();
@@ -128,6 +138,11 @@
 
     // paint
     var painting = false, paintVal = 1;
+    function canPaintTrack(tr) {
+      if (paintKind === 'all') return true;
+      if (paintKind === 'auto') return tr.kind === 'auto';
+      return tr.kind !== 'auto';
+    }
     function cellAt(e) {
       var rect = canvas.getBoundingClientRect();
       var x = (e.clientX - rect.left) * (canvas.width / rect.width);
@@ -163,6 +178,7 @@
     canvas.addEventListener('pointerdown', function (e) {
       var c = cellAt(e);
       if (!c) return;
+      if (!canPaintTrack(tracks[c.row])) return;
       painting = true;
       canvas.setPointerCapture(e.pointerId);
       paintVal = blockActive(tracks[c.row], c.bar) ? 0 : 1;
@@ -173,6 +189,7 @@
       if (!painting) return;
       var c = cellAt(e);
       if (!c) return;
+      if (!canPaintTrack(tracks[c.row])) return;
       if (blockActive(tracks[c.row], c.bar) !== paintVal) {
         setCell(c.row, c.bar, paintVal);
         render();
@@ -180,6 +197,25 @@
     });
     canvas.addEventListener('pointerup', function () { painting = false; });
     canvas.addEventListener('pointercancel', function () { painting = false; });
+  }
+
+  function addAutomationLoop() {
+    if (!ctx || !ctx.automationCandidates) return;
+    var list = ctx.automationCandidates();
+    if (!list.length) { ctx.status('No automatable FX parameters found. Add an effect first.'); return; }
+    var lines = ['Create automation loop lane (enter number):'];
+    for (var i = 0; i < list.length; i++) {
+      lines.push((i + 1) + '. ' + list[i].label + (list[i].active ? '  [active]' : ''));
+    }
+    var raw = window.prompt(lines.join('\n'), '1');
+    if (raw === null) return;
+    var idx = parseInt(raw, 10) - 1;
+    if (idx < 0 || idx >= list.length) { ctx.status('Invalid automation lane number.'); return; }
+    list[idx].activate();
+    buildTracks();
+    layout();
+    render();
+    ctx.status('Automation loop ready: ' + list[idx].label + '. Paint clips in automation mode.');
   }
 
   function layout() {
@@ -205,6 +241,9 @@
     for (var r = 0; r < tracks.length; r++) {
       var t = tracks[r];
       var y = RULER + r * ROW_H;
+      var dim = (paintKind !== 'all') &&
+        ((paintKind === 'auto' && t.kind !== 'auto') || (paintKind === 'audio' && t.kind === 'auto'));
+      g.globalAlpha = dim ? 0.35 : 1;
       g.fillStyle = r % 2 ? 'rgba(255,255,255,0.02)' : 'transparent';
       if (r % 2) g.fillRect(0, y, W, ROW_H);
       // label
@@ -233,6 +272,7 @@
           bi = end;
         } else bi++;
       }
+      g.globalAlpha = 1;
     }
 
     // grid lines (every bar, stronger every 4)
@@ -299,9 +339,10 @@
     return false;
   }
 
-  function barForFrame(frame) {
+  function barForFrame(frame, baseF) {
     var bf = ctx.engine.transport.barFrames();
-    var b = Math.floor((frame - startF) / bf);
+    var base = (typeof baseF === 'number') ? baseF : startF;
+    var b = Math.floor((frame - base) / bf);
     if (loopSong) b = ((b % bars) + bars) % bars;
     return b;
   }
@@ -315,13 +356,13 @@
     return -1;
   }
   function drumsSource(frame) {
-    var bar = barForFrame(frame);
+    var bar = barForFrame(frame, startF);
     if (bar < 0 || bar >= bars) return null;
     var slot = slotAtBar('drums', bar);
     return slot < 0 ? null : ctx.drums.patterns[slot];
   }
   function bassSource(frame) {
-    var bar = barForFrame(frame);
+    var bar = barForFrame(frame, startF);
     if (bar < 0 || bar >= bars) return null;
     var slot = slotAtBar('bass', bar);
     return slot < 0 ? null : ctx.bass.patterns[slot];
@@ -335,8 +376,8 @@
     return !!t.cells[bar];
   }
 
-  function refreshAutomation(frame) {
-    var bar = barForFrame(frame);
+  function refreshAutomation(frame, baseF) {
+    var bar = barForFrame(frame, baseF);
     for (var i = 0; i < tracks.length; i++) {
       var t = tracks[i];
       if (t.kind !== 'auto' || !t.apply) continue;
@@ -347,6 +388,52 @@
     }
   }
 
+  function resetAutomationState() {
+    for (var i = 0; i < tracks.length; i++) {
+      var t = tracks[i];
+      if (t.kind !== 'auto') continue;
+      t._lastOn = null;
+      if (t.reset) t.reset();
+    }
+  }
+
+  function hasAutomationClips() {
+    for (var i = 0; i < tracks.length; i++) {
+      if (tracks[i].kind === 'auto' && hasCells(tracks[i])) return true;
+    }
+    return false;
+  }
+
+  function autoTick() {
+    if (!ctx || !ctx.engine || playing) return;
+    if (!hasAutomationClips()) {
+      autoBaseF = null;
+      autoOrigin = null;
+      resetAutomationState();
+      return;
+    }
+    var t = ctx.engine.transport;
+    if (!t.running) {
+      autoBaseF = null;
+      autoOrigin = null;
+      resetAutomationState();
+      return;
+    }
+    if (autoBaseF === null || autoOrigin !== t.origin) {
+      autoBaseF = t.origin;
+      autoOrigin = t.origin;
+      for (var i = 0; i < tracks.length; i++) {
+        if (tracks[i].kind === 'auto') tracks[i]._lastOn = null;
+      }
+    }
+    refreshAutomation(t.nowFrame(), autoBaseF);
+  }
+
+  function ensureAutoTimer() {
+    if (autoTimer) return;
+    autoTimer = setInterval(autoTick, AUTO_MS);
+  }
+
   /* Schedule the loop-audio gates for one pass; re-armed each pass while looping. */
   function armLoopPass(sf) {
     tracks.forEach(function (t) {
@@ -355,7 +442,7 @@
         scheduleGate(t.gate, t.cells, sf);
       }
     });
-    refreshAutomation(sf);
+    refreshAutomation(sf, sf);
     var sr = ctx.engine.ctx.sampleRate;
     var bf = ctx.engine.transport.barFrames();
     var msToEnd = ((sf + bars * bf) / sr - ctx.engine.ctx.currentTime) * 1000;
@@ -409,11 +496,10 @@
         t.gate.gain.cancelScheduledValues(now);
         t.gate.gain.setTargetAtTime(1, now, 0.01);
       }
-      if (t.kind === 'auto') {
-        t._lastOn = null;
-        if (t.reset) t.reset();
-      }
     });
+    resetAutomationState();
+    autoBaseF = null;
+    autoOrigin = null;
     ctx.drums.songSource = null;
     ctx.bass.songSource = null;
     ctx.engine.stopAll();
@@ -425,7 +511,7 @@
 
   function frame() {
     if (!playing) { rafOn = false; render(); return; }
-    refreshAutomation(ctx.engine.transport.nowFrame());
+    refreshAutomation(ctx.engine.transport.nowFrame(), startF);
     render();
     requestAnimationFrame(frame);
   }
@@ -436,6 +522,7 @@
     if (!ui) buildUI();
     bars = parseInt(ui.bars.value, 10);
     buildTracks();
+    ensureAutoTimer();
     layout();
     render();
     ui.panel.classList.remove('hidden');

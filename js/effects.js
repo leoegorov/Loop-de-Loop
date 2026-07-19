@@ -500,6 +500,32 @@
     return out;
   };
 
+  FxRack.prototype.songAutomationCandidates = function (prefix) {
+    var out = [];
+    for (var fi = 0; fi < this.fx.length; fi++) {
+      var e = this.fx[fi];
+      for (var pi = 0; pi < e.def.params.length; pi++) {
+        var p = e.def.params[pi];
+        if (p.type === 'select') continue;
+        var a = e.autos[p.id];
+        if (!a) continue;
+        out.push({
+          id: this.id + ':' + e.uid + ':' + p.id,
+          label: prefix + ' · ' + e.def.name + ' · ' + p.label,
+          active: !!a.on,
+          activate: (function (auto) {
+            return function () {
+              if (auto.on) return;
+              if (auto.toggleBtn) auto.toggleBtn.click();
+              else auto.on = true;
+            };
+          })(a)
+        });
+      }
+    }
+    return out;
+  };
+
   FxRack.prototype.songSetAutomationActive = function (laneId, on) {
     var hit = this._findAuto(laneId);
     if (!hit || !hit.auto) return;
@@ -620,6 +646,7 @@
         ab.className = 'fx-auto-btn';
         ab.textContent = 'A';
         ab.title = 'Draw an automation loop for this parameter';
+        a.toggleBtn = ab;
         row.appendChild(ab);
         card.appendChild(row);
 
