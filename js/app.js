@@ -62,6 +62,8 @@
 
       drums.fxRack = attachInstrumentFx(drums.out, 'drums-fx', 'drums-fx-btn');
       bass.fxRack = attachInstrumentFx(bass.out, 'bass-fx', 'bass-fx-btn');
+      drums.bankUI = buildPatternBank('drum-bank', drums, 'Drum');
+      bass.bankUI = buildPatternBank('bass-bank', bass, '303');
       prizm.fxRack = attachInstrumentFx(prizm.out, 'prizm-fx', 'prizm-fx-btn');
       prizm.routeTap = prizm.fxRack.output;   // → looper records the FX'd signal
 
@@ -375,6 +377,33 @@
     });
     rack.songGate = gate;
     return rack;
+  }
+
+  /* Build an A/B/C/D pattern-bank selector for an instrument (drums / 303). */
+  function buildPatternBank(containerId, inst, label) {
+    var el = $(containerId);
+    var names = ['A', 'B', 'C', 'D'];
+    var btns = [];
+    names.forEach(function (nm, i) {
+      var b = document.createElement('button');
+      b.className = 'pat-slot' + (i === inst.curSlot ? ' active' : '');
+      b.textContent = nm;
+      b.addEventListener('click', function () {
+        inst.switchSlot(i);
+        btns.forEach(function (x, j) { x.classList.toggle('active', j === i); });
+        refreshBankDots();
+        status(label + ' pattern ' + nm + '.');
+      });
+      el.appendChild(b);
+      btns.push(b);
+    });
+    function refreshBankDots() {
+      btns.forEach(function (b, i) {
+        b.classList.toggle('has', i === inst.curSlot || inst.slotHasContent(i));
+      });
+    }
+    refreshBankDots();
+    return { btns: btns, refresh: refreshBankDots };
   }
 
   /* ---------------- song arranger ---------------- */

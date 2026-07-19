@@ -136,6 +136,7 @@ if (location.protocol === 'http:' && !/^(localhost|127\.|\[?::1)/.test(location.
     <label>Vol</label>
     <input type="range" id="drums-vol" min="0" max="1.5" step="0.01" value="0.9">
     <button id="drums-clear" title="Clear the whole pattern">CLEAR</button>
+    <span class="pat-bank" id="drum-bank" title="Pattern slots — click to switch (arrange them per-section in SONG)"></span>
     <select id="drum-add-type" title="Voice to add">
       <option value="bd">Kick</option>
       <option value="sd">Snare</option>
@@ -172,6 +173,7 @@ if (location.protocol === 'http:' && !/^(localhost|127\.|\[?::1)/.test(location.
     <label>Decay</label>
     <input type="range" id="bass-decay" min="0.03" max="1" step="0.01" value="0.25">
     <button id="bass-clear" title="Clear the whole pattern">CLEAR</button>
+    <span class="pat-bank" id="bass-bank" title="Pattern slots — click to switch (arrange them per-section in SONG)"></span>
     <button id="bass-fx-btn" title="Effects on the 303 bus (with automation)">FX</button>
     <span class="hint">one note per step · ACC = accent · SLD = slide to next note</span>
   </div>

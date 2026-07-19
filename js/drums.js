@@ -13,12 +13,17 @@
     cp: { label: 'CLAP', level: 0.75 }
   };
 
+  var SLOTS = 4;             // pattern bank A/B/C/D
+
   function DrumMachine(engine) {
     this.engine = engine;
     this.enabled = false;
     this.rows = [];          // { kind:'synth'|'sample', synth, label, buffer, steps:[bool], level, cells, el, _last }
     this.grid = null;
     this.schedFrom = null;
+    this.patterns = new Array(SLOTS).fill(null);  // each slot = [stepsArray per row] snapshot
+    this.curSlot = 0;
+    this.songSource = null;  // when set: fn(frame)->steps-per-row or null (song playback)
     this.openHatGain = null; // closed hat chokes the open hat, 808 style
     this.out = engine.ctx.createGain();
     this.out.gain.value = 0.9;
@@ -95,6 +100,31 @@
     return this.rows.some(function (row) {
       return row.steps.some(Boolean);
     });
+  };
+
+  /* ---- pattern bank (A/B/C/D) ---- */
+  DrumMachine.prototype.snapshot = function () {
+    return this.rows.map(function (r) { return r.steps.slice(); });
+  };
+  DrumMachine.prototype.syncSlot = function () {   // save live edit into the current slot
+    this.patterns[this.curSlot] = this.snapshot();
+  };
+  DrumMachine.prototype.slotHasContent = function (i) {
+    var p = this.patterns[i];
+    return !!(p && p.some(function (s) { return s.some(Boolean); }));
+  };
+  DrumMachine.prototype.loadSlot = function (i) {
+    var snap = this.patterns[i], self = this;
+    this.rows.forEach(function (row, idx) {
+      row.steps = (snap && snap[idx]) ? snap[idx].slice() : new Array(row.steps.length).fill(false);
+      row._last = -1;
+      if (row.el) self.buildRow(row, row.el);
+    });
+  };
+  DrumMachine.prototype.switchSlot = function (i) {
+    this.syncSlot();
+    this.curSlot = i;
+    this.loadSlot(i);
   };
 
   /* ---- voices ---- */
@@ -197,10 +227,18 @@
     var k = Math.floor((from - t.origin) / stepF) + 1;
     for (var fr = t.origin + k * stepF; fr <= horizon; fr += stepF, k++) {
       var when = fr / sr;
+      // song mode: songSource(frame) picks the pattern for that bar (null = silent)
+      var rowsSteps = null;
+      if (this.songSource) {
+        rowsSteps = this.songSource(fr);
+        if (!rowsSteps) continue;
+      }
       for (var r = 0; r < this.rows.length; r++) {
         var row = this.rows[r];
-        var n = row.steps.length;
-        if (row.steps[((k % n) + n) % n]) this.trigger(row, when);
+        var steps = rowsSteps ? rowsSteps[r] : row.steps;
+        if (!steps) continue;
+        var n = steps.length;
+        if (steps[((k % n) + n) % n]) this.trigger(row, when);
       }
     }
     this.schedFrom = horizon;

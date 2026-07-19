@@ -201,15 +201,22 @@ which channel it listens on:
 
 ### Song arranger
 
+The 808 and 303 each have a **4-slot pattern bank** (A/B/C/D buttons in their
+panels) — switch slots to build different patterns; a highlighted letter shows the
+active slot, and filled letters show which slots hold content. Switching slots saves
+your edit automatically.
+
 **SONG** (top bar) opens a bar-grid arrangement timeline. Each track — every loop
-channel, plus **DRUMS** and **303** — has a lane of bars you paint active/inactive
-(click or drag; pick a song length of 8–64 bars). **▶ PLAY SONG** plays the whole
-arrangement: loops come in and drop out at the bars you painted (playing in phase),
-and the drum and 303 patterns gate in and out with them, with a red playhead
-sweeping the grid. The entire arrangement's mutes are scheduled up front on the
-audio clock, so it stays perfectly in time. **loop song** repeats it; **STOP** (or
-Space / RESET) ends it. Loop lanes are keyed to each channel so your arrangement
-sticks to the right loops as you add or remove channels.
+channel, plus one lane per **DRUMS** and **303** pattern slot you've used — has a
+lane of bars you paint active/inactive (click or drag; song length 8–64 bars). So
+different sections can call up different drum and bass patterns: paint DRUMS A over
+the intro bars and DRUMS B over the chorus. Drum/303 slot lanes are mutually
+exclusive per bar (one pattern at a time). **▶ PLAY SONG** plays the whole
+arrangement: loops come in and drop out at the bars you painted (playing in phase,
+gated sample-accurately on the audio clock), and the drum/303 pumps play whichever
+pattern each bar calls for, with a red playhead sweeping the grid. **loop song**
+repeats it; **STOP** (or Space / RESET) ends it. Loop lanes are keyed to each
+channel so your arrangement sticks to the right loops as you add or remove channels.
 
 ### Export / import
 

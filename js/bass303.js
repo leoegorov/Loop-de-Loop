@@ -16,6 +16,9 @@
     this.schedFrom = null;
     this.pattern = [];
     for (var i = 0; i < 16; i++) this.pattern.push({ pitch: null, acc: false, slide: false });
+    this.patterns = [null, null, null, null];   // bank A/B/C/D, each = 16-step snapshot
+    this.curSlot = 0;
+    this.songSource = null;   // when set: fn(frame)->16-step pattern or null (song playback)
 
     // knobs
     this.cutoff = 700;
@@ -65,6 +68,29 @@
   Bass303.prototype.clearPattern = function () {
     this.pattern.forEach(function (s) { s.pitch = null; s.acc = false; s.slide = false; });
     this.refreshGrid();
+  };
+
+  /* ---- pattern bank (A/B/C/D) ---- */
+  Bass303.prototype.snapshot = function () {
+    return this.pattern.map(function (s) { return { pitch: s.pitch, acc: s.acc, slide: s.slide }; });
+  };
+  Bass303.prototype.syncSlot = function () { this.patterns[this.curSlot] = this.snapshot(); };
+  Bass303.prototype.slotHasContent = function (i) {
+    var p = this.patterns[i];
+    return !!(p && p.some(function (s) { return s.pitch !== null; }));
+  };
+  Bass303.prototype.loadSlot = function (i) {
+    var snap = this.patterns[i];
+    for (var s = 0; s < 16; s++) {
+      var src = snap && snap[s] ? snap[s] : { pitch: null, acc: false, slide: false };
+      this.pattern[s].pitch = src.pitch; this.pattern[s].acc = src.acc; this.pattern[s].slide = src.slide;
+    }
+    this.refreshGrid();
+  };
+  Bass303.prototype.switchSlot = function (i) {
+    this.syncSlot();
+    this.curSlot = i;
+    this.loadSlot(i);
   };
 
   /* ---- voice scheduling ---- */
@@ -118,10 +144,15 @@
     var from = (this.schedFrom === null || this.schedFrom < nowF) ? nowF : this.schedFrom;
     var k = Math.floor((from - t.origin) / stepF) + 1;
     for (var fr = t.origin + k * stepF; fr <= horizon; fr += stepF, k++) {
+      var pat = this.pattern;
+      if (this.songSource) {
+        pat = this.songSource(fr);
+        if (!pat) continue;   // song says silent this bar
+      }
       var step = ((k % 16) + 16) % 16;
-      var st = this.pattern[step];
-      var prev = this.pattern[(step + 15) % 16];
-      var next = this.pattern[(step + 1) % 16];
+      var st = pat[step];
+      var prev = pat[(step + 15) % 16];
+      var next = pat[(step + 1) % 16];
       var when = fr / sr;
       if (st.pitch !== null) {
         this.trigger(when, stepF / sr, st, prev, next);

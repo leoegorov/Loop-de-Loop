@@ -28,17 +28,33 @@
     return out;
   }
 
+  var SLOT_NAMES = ['A', 'B', 'C', 'D'];
+
   function buildTracks() {
     tracks = [];
     ctx.loopTracks().forEach(function (lt) {
       var key = 'loop:' + lt.id;   // stable across added/removed channels
-      tracks.push({ key: key, label: lt.label, kind: 'loop', color: COLORS.loop,
+      tracks.push({ key: key, label: lt.label, kind: 'loop', group: key, color: COLORS.loop,
         cells: cellsFor(key), gate: lt.gate, ch: lt.ch });
     });
-    tracks.push({ key: 'drums', label: 'DRUMS', kind: 'drums', color: COLORS.drums,
-      cells: cellsFor('drums'), gate: ctx.drumsGate });
-    tracks.push({ key: 'bass', label: '303', kind: 'bass', color: COLORS.bass,
-      cells: cellsFor('bass'), gate: ctx.bassGate });
+    addSlotLanes(ctx.drums, 'drums', 'DRUMS', COLORS.drums);
+    addSlotLanes(ctx.bass, 'bass', '303', COLORS.bass);
+  }
+
+  /* One lane per pattern slot that has content (plus the current slot), so different
+     song sections can call up different drum / 303 patterns. */
+  function addSlotLanes(inst, kind, prefix, color) {
+    inst.syncSlot();   // persist the live edit into its slot first
+    var shown = 0;
+    for (var i = 0; i < 4; i++) {
+      if (inst.slotHasContent(i) || i === inst.curSlot) {
+        var key = kind + ':' + i;
+        tracks.push({ key: key, label: prefix + ' ' + SLOT_NAMES[i], kind: kind, group: kind,
+          slot: i, color: color, cells: cellsFor(key), inst: inst });
+        shown++;
+      }
+    }
+    return shown;
   }
 
   /* ---------------- UI ---------------- */
@@ -95,13 +111,23 @@
       if (bar < 0 || bar >= bars || row < 0 || row >= tracks.length) return null;
       return { bar: bar, row: row };
     }
+    function setCell(row, bar, val) {
+      var tr = tracks[row];
+      tr.cells[bar] = val;
+      // instrument slots are mutually exclusive per bar (one pattern at a time)
+      if (val && (tr.group === 'drums' || tr.group === 'bass')) {
+        tracks.forEach(function (o) {
+          if (o !== tr && o.group === tr.group) o.cells[bar] = 0;
+        });
+      }
+    }
     canvas.addEventListener('pointerdown', function (e) {
       var c = cellAt(e);
       if (!c) return;
       painting = true;
       canvas.setPointerCapture(e.pointerId);
       paintVal = tracks[c.row].cells[c.bar] ? 0 : 1;
-      tracks[c.row].cells[c.bar] = paintVal;
+      setCell(c.row, c.bar, paintVal);
       render();
     });
     canvas.addEventListener('pointermove', function (e) {
@@ -109,7 +135,7 @@
       var c = cellAt(e);
       if (!c) return;
       if (tracks[c.row].cells[c.bar] !== paintVal) {
-        tracks[c.row].cells[c.bar] = paintVal;
+        setCell(c.row, c.bar, paintVal);
         render();
       }
     });
@@ -217,33 +243,56 @@
     g.linearRampToValueAtTime(0, tend + 0.005);
   }
 
-  function armPass(sf) {
-    var anyDrums = tracks.some(function (t) { return t.kind === 'drums' && hasCells(t); });
-    var anyBass = tracks.some(function (t) { return t.kind === 'bass' && hasCells(t); });
-    if (anyDrums) ctx.setDrums(true);
-    if (anyBass) ctx.setBass(true);
-    tracks.forEach(function (t) {
-      if (t.kind === 'loop' && hasCells(t) && t.ch) t.ch.songPlayAt(sf);
-      scheduleGate(t.gate, t.cells, sf);
-    });
-    // drums/bass pumps schedule strictly after schedFrom — include the song's first bar
-    if (anyDrums) ctx.drums.schedFrom = sf - 1;
-    if (anyBass) ctx.bass.schedFrom = sf - 1;
+  function hasCells(t) {
+    for (var i = 0; i < t.cells.length; i++) if (t.cells[i]) return true;
+    return false;
+  }
 
+  function barForFrame(frame) {
+    var bf = ctx.engine.transport.barFrames();
+    var b = Math.floor((frame - startF) / bf);
+    if (loopSong) b = ((b % bars) + bars) % bars;
+    return b;
+  }
+
+  /* which pattern slot is active for this instrument kind at a given bar (-1 = none) */
+  function slotAtBar(kind, bar) {
+    for (var i = 0; i < tracks.length; i++) {
+      var t = tracks[i];
+      if (t.kind === kind && t.cells[bar]) return t.slot;
+    }
+    return -1;
+  }
+  function drumsSource(frame) {
+    var bar = barForFrame(frame);
+    if (bar < 0 || bar >= bars) return null;
+    var slot = slotAtBar('drums', bar);
+    return slot < 0 ? null : ctx.drums.patterns[slot];
+  }
+  function bassSource(frame) {
+    var bar = barForFrame(frame);
+    if (bar < 0 || bar >= bars) return null;
+    var slot = slotAtBar('bass', bar);
+    return slot < 0 ? null : ctx.bass.patterns[slot];
+  }
+
+  /* Schedule the loop-audio gates for one pass; re-armed each pass while looping. */
+  function armLoopPass(sf) {
+    tracks.forEach(function (t) {
+      if (t.kind === 'loop' && hasCells(t) && t.ch) {
+        t.ch.songPlayAt(sf);
+        scheduleGate(t.gate, t.cells, sf);
+      }
+    });
     var sr = ctx.engine.ctx.sampleRate;
     var bf = ctx.engine.transport.barFrames();
     var msToEnd = ((sf + bars * bf) / sr - ctx.engine.ctx.currentTime) * 1000;
     clearTimeout(passTimer);
     passTimer = setTimeout(function () {
       if (!playing) return;
-      if (loopSong) armPass(sf + bars * bf);
+      if (loopSong) armLoopPass(sf + bars * bf);
       else stop();
     }, Math.max(50, msToEnd - 60));
-  }
-
-  function hasCells(t) {
-    for (var i = 0; i < t.cells.length; i++) if (t.cells[i]) return true;
-    return false;
   }
 
   function play() {
@@ -259,7 +308,17 @@
       startF = t.nextBoundary('bar');
     }
     playing = true;
-    armPass(startF);
+
+    // drums / 303: enable and drive their pumps from the arrangement (pattern per bar)
+    var anyDrums = tracks.some(function (t) { return t.kind === 'drums' && hasCells(t); });
+    var anyBass = tracks.some(function (t) { return t.kind === 'bass' && hasCells(t); });
+    ctx.drums.syncSlot(); ctx.bass.syncSlot();
+    if (anyDrums) { ctx.setDrums(true); ctx.drums.songSource = drumsSource; ctx.drums.schedFrom = startF - 1; }
+    else { ctx.setDrums(false); ctx.drums.songSource = null; }
+    if (anyBass) { ctx.setBass(true); ctx.bass.songSource = bassSource; ctx.bass.schedFrom = startF - 1; }
+    else { ctx.setBass(false); ctx.bass.songSource = null; }
+
+    armLoopPass(startF);
     ctx.status('Playing song (' + bars + ' bars' + (loopSong ? ', looping' : '') + ').');
     if (!rafOn) { rafOn = true; requestAnimationFrame(frame); }
   }
@@ -268,11 +327,15 @@
     playing = false;
     clearTimeout(passTimer);
     var now = ctx.engine.ctx.currentTime;
-    // release all gates back to audible, stop loops and instruments
+    // release loop gates back to audible; stop loops and instruments
     tracks.forEach(function (t) {
-      t.gate.gain.cancelScheduledValues(now);
-      t.gate.gain.setTargetAtTime(1, now, 0.01);
+      if (t.kind === 'loop' && t.gate) {
+        t.gate.gain.cancelScheduledValues(now);
+        t.gate.gain.setTargetAtTime(1, now, 0.01);
+      }
     });
+    ctx.drums.songSource = null;
+    ctx.bass.songSource = null;
     ctx.engine.stopAll();
     ctx.setDrums(false);
     ctx.setBass(false);
