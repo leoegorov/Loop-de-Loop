@@ -8,7 +8,7 @@ import function for audio and midi, compatible with allready exported files from
 play all plays everything in synced          [DONE] PLAY ALL starts loops + 808 + 303 on one shared bar downbeat (grid loops rejoin in phase, free loops restart at 0)
 works on github pages without the server on port 8080
 add more drum sounds
-add distortion to 303
+
 add automation to 303
 add more synth engines
 add vocoder 
