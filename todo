@@ -11,13 +11,11 @@ works on github pages without the server on port 8080   [FIXED - push + enable "
 options for custom drum sound import, and spawning more chanels as well as the option to create polyrythms
                                              [DONE] +SAMPLE imports audio files as drum rows, +VOICE spawns extra synth rows (removable), per-row step count 2-32 creates polyrhythms with per-row playheads
 
-add automation to 303
-
-add more synth engines
-add vocoder 
 transpose feature                            [DONE] per-loop Pitch field (+/-24 st): granular pitch shift at playback, tempo/grid locked, MIDI notes follow, non-destructive
+
+
+add automation to sliders ( currently missing or bugged)
+more effects ( low prio)
+add vocoder ( verry low prio)
+
 song build from loops feature
-more effects                                 [DONE] shared FX rack: filter(LP/HP/BP), delay(sync), reverb(sync), distortion, flanger, chorus - on loops AND 808/303/PRIZM buses
-effect automation                            [DONE] A button per knob: LFO (sine/tri/saw/sqr/rnd) at musical rates 1/16-4bars, transport phase-locked, depth around slider value
-
-
