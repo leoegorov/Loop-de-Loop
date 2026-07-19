@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var engine = null;   // constructed on power-on so a failed script load is reportable
+  var engine = new window.LooperEngine();
   var midi = null;
   var drums = null;
   var bass = null;
@@ -11,60 +11,33 @@
 
   var $ = function (id) { return document.getElementById(id); };
   var status = function (msg) { $('status-text').textContent = msg; };
-  /* On the power screen the status bar is hidden — errors must show there instead. */
-  var powerMsg = function (msg) { $('power-msg').textContent = msg; };
-
-  window.addEventListener('error', function (e) {
-    if (!$('power-overlay').classList.contains('hidden')) {
-      powerMsg('Script error: ' + (e.message || 'unknown') + (e.filename ? ' (' + e.filename.split('/').pop() + ')' : ''));
-    }
-  });
 
   /* ---------------- boot ---------------- */
   $('power-btn').addEventListener('click', async function () {
     $('power-btn').disabled = true;
-    powerMsg('Starting audio engine…');
     try {
-      if (!window.LooperEngine) throw new Error('engine.js failed to load — check the browser console.');
-      if (!window.isSecureContext) {
-        throw new Error('This page is not running in a secure context (https). Microphone, MIDI and the audio engine are unavailable — open the site via https://');
-      }
-      engine = new window.LooperEngine();
       await engine.init();
     } catch (e) {
-      powerMsg('Audio init failed: ' + e.message);
+      status('Audio init failed: ' + e.message);
       $('power-btn').disabled = false;
       return;
     }
 
+    midi = new window.MidiManager(engine);
+    var midiOk = await midi.init();
+
+    drums = new window.DrumMachine(engine);
+    drums.mountUI($('drum-grid'));
+    wireDrums();
+
+    bass = new window.Bass303(engine);
+    bass.mountUI($('bass-grid'));
+    wireBass();
+
     try {
-      powerMsg('Requesting MIDI access — answer the browser prompt if one appears…');
-      midi = new window.MidiManager(engine);
-      // don't hang forever on a silenced/ignored permission prompt
-      var midiOk = await Promise.race([
-        midi.init(),
-        new Promise(function (res) { setTimeout(function () { res(false); }, 8000); })
-      ]);
-
-      drums = new window.DrumMachine(engine);
-      drums.mountUI($('drum-grid'));
-      wireDrums();
-
-      bass = new window.Bass303(engine);
-      bass.mountUI($('bass-grid'));
-      wireBass();
-
-      powerMsg('Requesting microphone access — answer the browser prompt…');
-      try {
-        await engine.openInput();
-      } catch (e) {
-        status('Microphone access denied — looping needs an audio input. ' + e.message);
-      }
-      powerMsg('');
+      await engine.openInput();
     } catch (e) {
-      powerMsg('Startup failed: ' + e.message);
-      $('power-btn').disabled = false;
-      return;
+      status('Microphone access denied — looping needs an audio input. ' + e.message);
     }
 
     await populateInputs();

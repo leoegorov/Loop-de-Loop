@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LOOPING — software loop station</title>
+<script>
+/* Audio worklet, microphone and Web MIDI only exist on secure origins — bounce
+   plain-http visitors (e.g. via an old redirect) to https. */
+if (location.protocol === 'http:' && !/^(localhost|127\.|\[?::1)/.test(location.hostname)) {
+  location.replace('https:' + location.href.slice(5));
+}
+</script>
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -30,6 +37,7 @@
     <p>Software loop station — MIDI clock out, unlimited loop channels, per-channel FX.</p>
     <button id="power-btn">POWER ON</button>
     <p class="hint">Grants microphone + MIDI access. Use Chrome or Edge.</p>
+    <p id="power-msg"></p>
   </div>
 </div>
 

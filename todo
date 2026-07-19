@@ -7,7 +7,8 @@ import function for audio and midi, compatible with allready exported files from
                                              [DONE] IMPORT button: reads exported zips (wav+mid+manifest, tempo restored), loose .wav/.mid, deflate zips; loops land stopped, bar-aligned on first play
 play all plays everything in synced          [DONE] PLAY ALL starts loops + 808 + 303 on one shared bar downbeat (grid loops rejoin in phase, free loops restart at 0)
 works on github pages without the server on port 8080
-add more drum sounds
+
+options for custom drum sound import, and spawning more chanels as well as the option to create polyrythms
 
 add automation to 303
 add more synth engines

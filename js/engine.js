@@ -633,7 +633,13 @@
   }
 
   Engine.prototype.init = async function () {
+    if (typeof AudioContext === 'undefined') {
+      throw new Error('Web Audio is not supported in this browser.');
+    }
     this.ctx = new AudioContext({ latencyHint: 'interactive' });
+    if (!this.ctx.audioWorklet) {
+      throw new Error('AudioWorklet unavailable — this usually means the page was opened over plain http. Use https.');
+    }
     await this.ctx.resume();
     var blob = new Blob([WORKLET_SOURCE], { type: 'application/javascript' });
     var url = URL.createObjectURL(blob);
@@ -654,6 +660,9 @@
   };
 
   Engine.prototype.openInput = async function (deviceId) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error('Microphone API unavailable (https required).');
+    }
     var constraints = {
       audio: {
         echoCancellation: false,
