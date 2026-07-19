@@ -13,6 +13,15 @@
   var ed = null;        // open editor session { engine, midi, ch, chLabel, pattern, status }
   var noteDrag = null;  // { note, mode:'move'|'resize', startStep, startPitch, origStep, origPitch, origLen, moved, created }
 
+  /* Measured MIDI→synth→audio-input round trip for bounce recordings (ms).
+     Self-calibrates: each bounce measures the residual misalignment of the first
+     note's audio and folds it in, so takes get tighter over time. */
+  var bounceCompMs = 0;
+  try { bounceCompMs = parseFloat(localStorage.getItem('looping-bounce-comp')) || 0; } catch (e) {}
+  function saveBounceComp() {
+    try { localStorage.setItem('looping-bounce-comp', String(Math.round(bounceCompMs * 10) / 10)); } catch (e) {}
+  }
+
   /* pattern.chan: 0–15 = single MIDI channel, -1 = OMNI (broadcast on all 16) */
   function patternChans(pattern) {
     if (pattern.chan >= 0) return [pattern.chan];
@@ -385,6 +394,9 @@
     var lenF = Math.round(ed.pattern.bars * ed.engine.transport.barFrames());
     sess = { mode: 'rec', startF: startF, lenF: lenF, endF: startF + lenF, schedFrom: null, closeSent: false };
     var ch = ed.ch;
+    // widen the capture window by the measured MIDI/synth round trip so the
+    // synth's late-arriving audio lands at the right loop positions
+    ch.setComp(ed.engine.compFrames + Math.round(bounceCompMs / 1000 * ed.engine.ctx.sampleRate));
     ch.sawNote = false; ch.lastMidiAbs = 0; ch.lastNoteOnAbs = 0;
     ch.pendingAction = 'record';
     ch.node.port.postMessage({ cmd: 'schedule', action: 'record', frame: startF, free: false });
@@ -397,10 +409,56 @@
     flushNotes();
     if (sess.mode === 'rec' && ed && ed.ch.state !== 'playing') {
       ed.ch.stop();   // abort the take
+      ed.ch.setComp(ed.engine.compFrames);
       ed.status('Recording aborted.');
     }
     sess = null;
     if (ed) render();
+  }
+
+  /* After a bounce: measure where the first note's audio actually landed vs. where
+     the pattern says it should be, rotate the loop into alignment (length and grid
+     untouched), fold the residual into the stored calibration, re-fade the seam. */
+  async function finalizeBounce(eng, ch, statusFn) {
+    var sr = eng.ctx.sampleRate;
+    ch.setComp(eng.compFrames);   // back to live-playing compensation
+    var rotate = 0;
+    try {
+      var snap = await ch.requestSnapshot();
+      if (snap.len && snap.bufL) {
+        var L = new Float32Array(snap.bufL), R = new Float32Array(snap.bufR);
+        var firstOn = null;
+        for (var i = 0; i < ch.midiEvents.length; i++) {
+          var d = ch.midiEvents[i].data;
+          if ((d[0] & 0xF0) === 0x90 && d[2] > 0) { firstOn = ch.midiEvents[i].off; break; }
+        }
+        if (firstOn !== null) {
+          var peak = 0;
+          for (i = 0; i < L.length; i++) {
+            var m = Math.max(Math.abs(L[i]), Math.abs(R[i]));
+            if (m > peak) peak = m;
+          }
+          if (peak >= 0.003) {
+            var thr = Math.max(0.003, peak * 0.02);
+            var on = 0;
+            while (on < L.length && Math.abs(L[on]) < thr && Math.abs(R[on]) < thr) on++;
+            var shift = on - firstOn;
+            if (shift > 32 && shift < 0.35 * sr) {
+              rotate = shift;
+              bounceCompMs = Math.min(500, bounceCompMs + shift / sr * 1000);
+              saveBounceComp();
+              if (statusFn) statusFn('Bounce aligned: compensated ' + Math.round(shift / sr * 1000) +
+                ' ms MIDI/synth latency (remembered for next takes).');
+            } else if (shift < -32 && shift > -0.05 * sr) {
+              rotate = shift;
+              bounceCompMs = Math.max(0, bounceCompMs + shift / sr * 1000);
+              saveBounceComp();
+            }
+          }
+        }
+      }
+    } catch (e) { /* fall through: still fade the seam */ }
+    ch.node.port.postMessage({ cmd: 'rotate', frames: rotate });
   }
 
   function flushNotes() {
@@ -436,7 +494,8 @@
     if (sess.mode === 'rec') {
       var ch = ed.ch;
       if (!sess.closeSent && ch.state === 'recording') {
-        ch.closeWithLength(sess.lenF, { noTrim: true });
+        // no perfect pass: alignment + seam fade happen in finalizeBounce
+        ch.closeWithLength(sess.lenF, { noTrim: true, noPerfect: true });
         sess.closeSent = true;
       }
       if (ch.state === 'playing') {
@@ -447,6 +506,7 @@
         if (ch.onUpdate) ch.onUpdate();
         ed.status('Loop ' + ed.chLabel + ' recorded from the pattern (' +
           (ch.midiMute ? 'MIDI output muted — audio has the part' : 'MIDI output looping') + ').');
+        finalizeBounce(eng, ch, ed.status);
         sess = null;
         render();
         return;

@@ -288,6 +288,13 @@ body.learn-mode [data-mappable] { outline: 2px dashed var(--queued); outline-off
 #add-channel:hover { filter: brightness(1.15); }
 
 /* ---- waveform editor ---- */
+#slicer-overlay {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex; align-items: center; justify-content: center;
+  padding: 1.5rem;
+}
+.slicer-title { color: var(--od) !important; }
 #editor-overlay {
   position: fixed; inset: 0; z-index: 50;
   background: rgba(0, 0, 0, 0.65);

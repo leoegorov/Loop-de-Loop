@@ -508,7 +508,7 @@
       msg.frame = 0;
       msg.len = lenFrames;
     }
-    if (eng.perfectLoops) {
+    if (eng.perfectLoops && !(opts && opts.noPerfect)) {
       msg.perfect = true;
       msg.perfectTrim = !(opts && opts.noTrim) && (q === 'off' ||
         (eng.firstLoopSetsTempo && !eng.transport.tempoLocked));
@@ -700,21 +700,24 @@
   Engine.prototype.stopAll = function () {
     this.channels.forEach(function (c) { c.stop(); });
   };
-  /* Resume every stopped loop, phase-aligned. Starting the transport first makes
-     all of them land on the same boundary instead of trickling in one bar apart. */
-  Engine.prototype.playAll = function () {
-    var t = this.transport;
-    if (!this.channels.some(function (c) { return c.state === 'stopped'; })) return false;
-    if (!t.running) {
-      var f = Math.round(t.nowFrame() + 0.015 * t.sr);
-      t.startAt(f);
-      t.tempoLocked = true;
-      if (this.onTransportStart) this.onTransportStart(f);
-    }
+  /* Resume every stopped loop at one common frame (a shared downbeat).
+     Grid-length loops rejoin in phase with the master cycle; free-length loops
+     restart from their beginning on that downbeat. */
+  Engine.prototype.playAllAt = function (frame) {
+    var bf = this.transport.beatFrames();
     this.channels.forEach(function (c) {
-      if (c.state === 'stopped') c.schedule('play');
+      if (c.state !== 'stopped') return;
+      var beats = c.lenFrames / bf;
+      var gridLen = c.lenFrames > 0 && Math.abs(beats - Math.round(beats)) < 0.01;
+      var msg = { cmd: 'schedule', action: 'play', frame: frame, free: !gridLen };
+      if (c.loadedNeedsAnchor) {
+        msg.anchor = frame;
+        c.loadedNeedsAnchor = false;
+      }
+      c.pendingAction = 'play';
+      c.node.port.postMessage(msg);
+      if (c.onUpdate) c.onUpdate();
     });
-    return true;
   };
   Engine.prototype.resetAll = function () {
     this.channels.forEach(function (c) { c.clear(); });

@@ -111,6 +111,18 @@ without retriggering the envelope) rows — the classic acid vocabulary. Knobs:
 waveform, cutoff, resonance, env mod, decay, volume. PLAY starts the pattern (and
 the clock, if needed); placing notes previews them when the pattern isn't running.
 
+### Beat slicer
+
+**SLICE** on any finished loop chops it on the beat grid (beat / 1/8 / 1/16 — or a
+fixed slice count when no tempo grid exists) and lets you rework the audio slice by
+slice: **click** a slice to silence it, **drag** one slice onto another position to
+copy it there (stutters and rolls by repeating a slice), **double-click** to reverse
+a slice, plus SHUFFLE (random order) and RESET. Moved slices show in purple with
+their source number; PREVIEW loops the sliced version before you commit. APPLY
+rebuilds the loop in place — same length, same grid anchor, 2 ms de-click fades at
+every slice edge — and the result plays through the channel's FX chain, so slicing
+happens **before the effects**.
+
 ### MIDI sequencer (compose → record)
 
 **SEQ** on any channel opens a piano-roll sequencer (C2–C6, 16th-note grid, 1–8
@@ -130,6 +142,13 @@ which channel it listens on:
   rec* to keep the synth playing it live every cycle instead.
 - **SAVE MIDI** writes the pattern into an existing loop's MIDI events without
   recording; opening SEQ on a loop with captured MIDI converts it into editable notes.
+- **Bounce latency is self-calibrating**: the MIDI→synth→audio-input round trip
+  would otherwise leave silence at the loop start and a cut-off tail. After each
+  bounce the app measures where the first note's audio actually landed, rotates the
+  loop into alignment (exact length and grid kept), re-fades the seam, and remembers
+  the measured latency — so the next take records through a correctly shifted window
+  and captures the full tail. The first-ever bounce self-corrects a moment after
+  closing; takes after that are aligned from the start.
 
 ### Export / import
 
@@ -154,7 +173,7 @@ this design to a native JUCE app, which would also unlock ASIO latency.
 | `1`–`9` | Main loop button of channel 1–9 |
 | `Shift` + `1`–`9` | Stop that channel |
 | `N` | Add a loop channel |
-| `P` | Play all: stopped loops + the 808 and 303 patterns (phase-aligned) |
+| `P` | Play all: loops + 808 + 303 start together on one shared bar downbeat |
 | `Space` | Stop all: loops, drums, and 303 (clock keeps running) |
 | `D` | Show/hide the drum machine |
 

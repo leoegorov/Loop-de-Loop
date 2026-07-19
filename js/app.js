@@ -321,14 +321,44 @@
     return bass.pattern.some(function (st) { return st.pitch !== null; });
   }
 
-  /* Start everything that has something to play: stopped loops rejoin the grid,
-     and the 808/303 patterns come on (skipped when their grids are empty). */
+  /* Start everything that has something to play — together, on one downbeat.
+     Clock stopped: everything starts now, aligned. Clock running: everything
+     (stopped loops, 808, 303) comes in at the next bar, so the whole arrangement
+     drops as one. */
   function playEverything() {
+    var t = engine.transport;
+    var wantLoops = engine.channels.some(function (c) { return c.state === 'stopped'; });
+    var wantDrums = !drums.enabled && drumsHavePattern();
+    var wantBass = !bass.enabled && bassHasPattern();
+    if (!wantLoops && !wantDrums && !wantBass) { status('Nothing to play.'); return; }
+
+    var f;
+    if (!t.running) {
+      f = Math.round(t.nowFrame() + 0.015 * t.sr);
+      t.startAt(f);
+      t.tempoLocked = true;
+      $('bpm-input').disabled = true;
+      midi.startClock(f);
+    } else {
+      f = t.nextBoundary('bar');
+    }
+
     var started = [];
-    if (engine.playAll()) started.push('loops');
-    if (!drums.enabled && drumsHavePattern()) { toggleDrums(); started.push('drums'); }
-    if (!bass.enabled && bassHasPattern()) { toggleBass(); started.push('303'); }
-    status(started.length ? 'Playing: ' + started.join(', ') + '.' : 'Nothing to play.');
+    if (wantLoops) { engine.playAllAt(f); started.push('loops'); }
+    if (wantDrums) {
+      drums.enabled = true;
+      drums.schedFrom = f - 1;   // pump schedules strictly after schedFrom: downbeat step included
+      $('drums-toggle').classList.add('active');
+      started.push('drums');
+    }
+    if (wantBass) {
+      bass.enabled = true;
+      bass.schedFrom = f - 1;
+      $('bass-toggle').classList.add('active');
+      started.push('303');
+    }
+    var waitMs = (f - t.nowFrame()) / t.sr * 1000;
+    status('Playing ' + started.join(' + ') + (waitMs > 100 ? ' together at the next bar.' : ' together.'));
   }
 
   /* ---------------- MIDI learn plumbing ---------------- */
@@ -585,8 +615,11 @@
         '<button class="b-stop">STOP</button>' +
         '<button class="b-undo" disabled>UNDO</button>' +
         '<button class="b-clear">CLEAR</button>' +
+      '</div>' +
+      '<div class="ch-buttons">' +
         '<button class="b-edit" disabled title="Open the waveform editor for this loop">EDIT</button>' +
         '<button class="b-seq" title="Open the MIDI sequencer — compose a pattern, ⏺ records it into this loop">SEQ</button>' +
+        '<button class="b-slice" disabled title="Chop this loop on the beat grid: rearrange, repeat, reverse or silence slices (plays through the FX chain)">SLICE</button>' +
       '</div>' +
       '<div class="ch-buttons midi-row">' +
         '<button class="b-arm" title="Start recording on the first incoming MIDI note">ARM</button>' +
@@ -615,6 +648,7 @@
       clearBtn: root.querySelector('.b-clear'),
       editBtn: root.querySelector('.b-edit'),
       seqBtn: root.querySelector('.b-seq'),
+      sliceBtn: root.querySelector('.b-slice'),
       armBtn: root.querySelector('.b-arm'),
       autoBtn: root.querySelector('.b-auto'),
       midiChk: root.querySelector('.midi-rec input'),
@@ -642,6 +676,9 @@
     });
     els.seqBtn.addEventListener('click', function () {
       window.MidiSequencer.open(engine, midi, ch, strips.indexOf(strip) + 1, status);
+    });
+    els.sliceBtn.addEventListener('click', function () {
+      window.BeatSlicer.open(engine, ch, strips.indexOf(strip) + 1, status);
     });
     els.vol.addEventListener('input', function () { ch.setVolume(parseFloat(this.value)); });
     els.vol.addEventListener('click', wrapMappable(function () {}));
@@ -746,6 +783,7 @@
     strip.els.label.childNodes[0].textContent = labelText;
     strip.els.undoBtn.disabled = !ch.hasUndo;
     strip.els.editBtn.disabled = !(ch.state === 'playing' || ch.state === 'stopped');
+    strip.els.sliceBtn.disabled = strip.els.editBtn.disabled;
     strip.els.armBtn.classList.toggle('active', ch.armed);
     strip.els.autoBtn.classList.toggle('active', ch.autoEnd);
     strip.els.midiCount.textContent = ch.midiEvents.length ? '(' + ch.midiEvents.length + ')' : '';
