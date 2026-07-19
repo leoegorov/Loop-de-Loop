@@ -36,8 +36,12 @@ AudioWorklet). Click **POWER ON** and grant microphone + MIDI permissions.
 4. **Quantize** (Bar / Beat / Off) controls when record/overdub/play/stop actions fire.
    Loops of different lengths stay phase-locked to the master grid, RC-505 style.
 5. **＋ ADD LOOP** spawns a new channel — as many as you like.
-6. Per channel: volume, STOP / UNDO (one level of overdub undo) / CLEAR, and an FX
-   chain (low/high-pass filter, delay, reverb, distortion, chorus — stack freely).
+6. Per channel: volume, **Pitch** (transpose ±24 semitones — granular pitch shift at
+   playback, so tempo, length and grid stay locked; captured MIDI notes transpose
+   with it, and it's non-destructive: 0 st is bit-exact passthrough and EDIT/SLICE/
+   EXPORT always see the original audio), STOP / UNDO (one level of overdub undo) /
+   CLEAR, and an FX chain (low/high-pass filter, delay, reverb, distortion, chorus —
+   stack freely).
 
 ### MIDI-triggered recording & MIDI loops
 

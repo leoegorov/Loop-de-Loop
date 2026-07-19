@@ -28,6 +28,8 @@
     '    this.writeMode = "set";',
     '    this.perfectTrim = false;',
     '    this.perfectAt = Infinity;  // input-clock frame after which the perfect pass may run',
+    '    this.pitchRate = 1;          // 2^(semitones/12); granular playback when != 1',
+    '    this.grain = 2 * Math.round(sampleRate * 0.04);',
     '    this.maxFrames = sampleRate * 300;',
     '    this.blockCount = 0;',
     '    var self = this;',
@@ -95,6 +97,8 @@
     '      }',
     '    } else if (m.cmd === "comp") {',
     '      this.comp = m.value;',
+    '    } else if (m.cmd === "transpose") {',
+    '      this.pitchRate = Math.pow(2, (m.value || 0) / 12);',
     '    }',
     '  }',
     '  pushRec(a, b) {',
@@ -211,7 +215,26 @@
     '        var pos = frame - this.anchor;',
     '        if (pos >= 0) {',
     '          pos = pos % this.len;',
-    '          outL[j] = this.bufL[pos]; outR[j] = this.bufR[pos];',
+    '          if (this.pitchRate === 1) {',
+    '            outL[j] = this.bufL[pos]; outR[j] = this.bufR[pos];',
+    '          } else {',
+    '            // granular pitch shift: two overlapping triangle-windowed grain',
+    '            // streams read the buffer at pitchRate while pos advances 1:1,',
+    '            // so pitch changes but tempo/length stay locked to the grid',
+    '            var G = this.grain < this.len ? this.grain : this.len;',
+    '            var half = G * 0.5, aL = 0, aR = 0;',
+    '            for (var s2 = 0; s2 < 2; s2++) {',
+    '              var ph = (pos + s2 * half) % G;',
+    '              var rp = (pos - ph) + ph * this.pitchRate;',
+    '              var w = 1 - Math.abs(2 * ph / G - 1);',
+    '              rp = rp % this.len; if (rp < 0) rp += this.len;',
+    '              var i0 = Math.floor(rp), i1 = i0 + 1; if (i1 >= this.len) i1 = 0;',
+    '              var fp = rp - i0;',
+    '              aL += (this.bufL[i0] * (1 - fp) + this.bufL[i1] * fp) * w;',
+    '              aR += (this.bufR[i0] * (1 - fp) + this.bufR[i1] * fp) * w;',
+    '            }',
+    '            outL[j] = aL; outR[j] = aR;',
+    '          }',
     '        }',
     '      }',
     '      if (inFrame >= this.recWinStart && inFrame < this.recWinEnd) {',
@@ -335,6 +358,7 @@
     this.lastNoteOnAbs = 0;     // absolute frame of last note-on while recording
     this.midiEvents = [];       // { off: frames-from-loop-start, data: [st,d1,d2] }
     this.midiMute = false;      // suppress looped MIDI output (e.g. after a sequencer bounce)
+    this.transpose = 0;         // semitones; audio shifts granularly, MIDI notes shift with it
     this.seqPattern = null;     // sequencer pattern for this channel { bars, chan, notes }
     this.pendingMidi = [];      // { f: absolute frame, data } captured while rec/overdub
     this.midiUndo = null;       // snapshot for one-level overdub undo
@@ -489,6 +513,7 @@
     this.pendingAction = null;
     this.armed = false;
     this.midiEvents = []; this.pendingMidi = []; this.midiUndo = null;
+    this.setTranspose(0);
   };
 
   /* Close the loop at an exact length. If that point is still in the future the close
@@ -573,6 +598,12 @@
   };
   LoopChannel.prototype.setComp = function (frames) {
     this.node.port.postMessage({ cmd: 'comp', value: frames });
+  };
+  LoopChannel.prototype.setTranspose = function (semitones) {
+    var st = Math.max(-24, Math.min(24, Math.round(semitones) || 0));
+    this.transpose = st;
+    this.node.port.postMessage({ cmd: 'transpose', value: st });
+    return st;
   };
 
   LoopChannel.prototype.addFx = function (key) {

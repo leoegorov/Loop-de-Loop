@@ -265,6 +265,12 @@ body {
 .ch-vol { display: flex; align-items: center; gap: 0.45rem; }
 .ch-vol label { font-size: 0.7rem; color: var(--dim); text-transform: uppercase; }
 .ch-vol input { flex: 1; accent-color: var(--accent); }
+.ch-pitch input {
+  flex: none; width: 3.6rem;
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--edge); border-radius: 4px; padding: 0.15rem 0.3rem;
+}
+.ch-pitch .unit { font-size: 0.7rem; color: var(--dim); }
 
 /* fx */
 .fx-section { border-top: 1px solid var(--edge); padding-top: 0.5rem; display: flex; flex-direction: column; gap: 0.45rem; }

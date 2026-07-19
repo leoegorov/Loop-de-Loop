@@ -564,10 +564,17 @@
       var from = (ch.schedFrom === null || ch.schedFrom < nowF) ? nowF : ch.schedFrom;
       var anchor = ch.anchorFrame, len = ch.lenFrames;
       ch.midiEvents.forEach(function (ev) {
+        var data = ev.data;
+        if (ch.transpose) {
+          var hi = data[0] & 0xF0;
+          if (hi === 0x90 || hi === 0x80) {
+            data = [data[0], Math.max(0, Math.min(127, data[1] + ch.transpose)), data[2]];
+          }
+        }
         var k = Math.floor((from - anchor - ev.off) / len) + 1;
         var f = anchor + ev.off + k * len;
         while (f <= horizon) {
-          midi.output.send(ev.data, Math.max(performance.now(), engine.frameToPerf(f)));
+          midi.output.send(data, Math.max(performance.now(), engine.frameToPerf(f)));
           f += len;
         }
       });
@@ -678,6 +685,9 @@
         '</label>' +
       '</div>' +
       '<div class="ch-vol"><label>Vol</label><input type="range" min="0" max="1.5" step="0.01" value="1"></div>' +
+      '<div class="ch-vol ch-pitch"><label>Pitch</label>' +
+        '<input type="number" min="-24" max="24" step="1" value="0" title="Transpose this loop in semitones — pitch shifts, tempo stays locked (MIDI notes follow)">' +
+        '<span class="unit">st</span></div>' +
       '<div class="fx-section">' +
         '<div class="fx-list"></div>' +
         '<div class="fx-add">' +
@@ -703,6 +713,7 @@
       midiChk: root.querySelector('.midi-rec input'),
       midiCount: root.querySelector('.midi-count'),
       vol: root.querySelector('.ch-vol input'),
+      pitch: root.querySelector('.ch-pitch input'),
       fxList: root.querySelector('.fx-list'),
       fxSelect: root.querySelector('.fx-select')
     };
@@ -731,6 +742,12 @@
     });
     els.vol.addEventListener('input', function () { ch.setVolume(parseFloat(this.value)); });
     els.vol.addEventListener('click', wrapMappable(function () {}));
+    els.pitch.addEventListener('change', function () {
+      var st = ch.setTranspose(parseFloat(this.value));
+      this.value = st;
+      flushNotes(ch);   // avoid hanging notes: note-offs would land on the new pitch
+      status('Loop ' + (strips.indexOf(strip) + 1) + ' transposed ' + (st > 0 ? '+' : '') + st + ' st (tempo unchanged).');
+    });
     els.armBtn.addEventListener('click', wrapMappable(function () {
       ch.armed = !ch.armed;
       if (ch.armed && !ch.midiRec) status('Armed — recording starts on the first MIDI note. Tick ♪ MIDI to also capture the notes.');
@@ -839,6 +856,7 @@
     if (ch.state === 'empty') {
       strip.els.ring.setAttribute('stroke-dashoffset', RING_C);
       strip.els.time.textContent = '';
+      strip.els.pitch.value = ch.transpose;
     }
   }
 
