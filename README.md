@@ -86,8 +86,11 @@ it closes, on the audio thread:
   or the tempo-defining first loop) — grid-locked loops keep their exact bar length.
   Because it runs *before* the tempo is calculated, the BPM guess from your first
   loop gets more accurate too.
-- **Seam de-click** — a ~6 ms fade at the loop start and end so the wrap point never
-  clicks or pops, re-applied after every overdub layer.
+- **Seam crossfade** — the looper keeps recording ~15 ms of input *past* the loop
+  end (the natural continuation) and crossfades it over the loop start, so the wrap
+  point flows seamlessly with no click and no fade-to-zero dip — even on sustained
+  tones and pads. Applied after recording and after every overdub layer. (Loops with
+  no captured tail — imports, rotates, slice edits — fall back to a short edge fade.)
 
 ### Per-loop quantize
 
