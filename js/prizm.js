@@ -148,6 +148,50 @@
     this.paintKey(midiNote, true);
   };
 
+  /* Fire-and-forget scheduled note for sequenced/looped internal playback.
+     Builds its own ray bank with envelope scheduled at explicit audio times,
+     independent of the live-keyboard voice map, and cleans itself up. */
+  Prizm.prototype.playScheduled = function (midiNote, vel, onT, offT) {
+    var ctx = this.engine.ctx;
+    var freq = midiHz(midiNote);
+    var env = ctx.createGain();
+    env.gain.value = 0;
+    env.connect(this.filter);
+    var oscs = [];
+    this.params.oscs.forEach(function (o) {
+      var mix = ctx.createGain();
+      mix.gain.value = o.level * 0.5;
+      mix.connect(env);
+      var base = oscBase(o, freq);
+      var amps = rayAmps(o.rays, o.tilt);
+      for (var k = 0; k < o.rays; k++) {
+        var f = rayFreq(base, k, o.refr);
+        var g = ctx.createGain();
+        g.gain.value = f < 18000 ? amps[k] : 0;
+        g.connect(mix);
+        var osc = ctx.createOscillator();
+        osc.type = o.wave;
+        osc.frequency.value = Math.min(f, 20000);
+        osc.detune.value = o.disp * k;
+        osc.connect(g);
+        osc.start(onT);
+        oscs.push(osc);
+      }
+    });
+    var p = this.params;
+    var a = timeVal(p.atk, 3), d = timeVal(p.dec, 3), s = p.sus / 100, r = timeVal(p.rel, 5);
+    var peak = 0.35 + 0.65 * (vel === undefined ? 0.8 : vel);
+    env.gain.setValueAtTime(0, onT);
+    env.gain.linearRampToValueAtTime(peak, onT + a);
+    env.gain.setTargetAtTime(s * peak, onT + a, Math.max(d / 3, 0.005));
+    var relStart = Math.max(offT, onT + a + 0.005);
+    env.gain.setTargetAtTime(0, relStart, Math.max(r / 4, 0.008));
+    var stopAt = relStart + r * 1.6 + 0.12;
+    oscs.forEach(function (osc) { try { osc.stop(stopAt); } catch (e) {} });
+    setTimeout(function () { try { env.disconnect(); } catch (e) {} },
+      Math.max(50, (stopAt - ctx.currentTime) * 1000 + 200));
+  };
+
   Prizm.prototype.noteOff = function (midiNote) {
     var v = this.voices.get(midiNote);
     if (!v) return;

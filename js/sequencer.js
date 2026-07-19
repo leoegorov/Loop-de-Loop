@@ -12,6 +12,7 @@
   var ui = null;
   var ed = null;        // open editor session { engine, midi, ch, chLabel, pattern, status }
   var noteDrag = null;  // { note, mode:'move'|'resize', startStep, startPitch, origStep, origPitch, origLen, moved, created }
+  var internalSynth = null;   // PRIZM, for the "→ internal synth" target
 
   /* Measured MIDI→synth→audio-input round trip for bounce recordings (ms).
      Self-calibrates: each bounce measures the residual misalignment of the first
@@ -106,6 +107,9 @@
         '<div class="editor-row">' +
           '<label class="seq-l">Bars <select class="seq-bars"><option>1</option><option selected>2</option><option>4</option><option>8</option></select></label>' +
           '<label class="seq-l">Ch <select class="seq-chan"></select></label>' +
+          '<label class="seq-l">Out <select class="seq-target" title="Where this loop\'s MIDI plays">' +
+            '<option value="ext">MIDI port</option><option value="int">PRIZM synth</option>' +
+          '</select></label>' +
           '<label class="seq-l">Note <select class="seq-notelen">' +
             '<option value="1">1/16</option><option value="2" selected>1/8</option>' +
             '<option value="4">1/4</option><option value="8">1/2</option><option value="16">1 bar</option>' +
@@ -152,6 +156,7 @@
       info: overlay.querySelector('.seq-info'),
       bars: overlay.querySelector('.seq-bars'),
       chan: chanSel,
+      target: overlay.querySelector('.seq-target'),
       noteLen: overlay.querySelector('.seq-notelen'),
       vel: overlay.querySelector('.seq-vel'),
       velVal: overlay.querySelector('.seq-vel-val'),
@@ -175,6 +180,12 @@
     });
     ui.chan.addEventListener('change', function () {
       if (ed) ed.pattern.chan = parseInt(this.value, 10);
+    });
+    ui.target.addEventListener('change', function () {
+      if (!ed) return;
+      ed.ch.midiTarget = this.value;
+      if (this.value === 'int' && !internalSynth) ed.status('Internal synth unavailable.');
+      else ed.status(this.value === 'int' ? 'This loop\'s MIDI plays the internal PRIZM synth.' : 'This loop\'s MIDI plays the external MIDI port.');
     });
 
     overlay.querySelector('.seq-clear').addEventListener('click', function () {
@@ -296,9 +307,15 @@
   }
 
   function previewNote(pitch) {
-    var out = ed.midi.output;
-    if (!out || sess) return;
+    if (sess) return;
     var vel = parseInt(ui.vel.value, 10);
+    if (ed.ch.midiTarget === 'int' && internalSynth) {
+      var t = ed.engine.ctx.currentTime + 0.01;
+      internalSynth.playScheduled(pitch, vel / 127, t, t + 0.3);
+      return;
+    }
+    var out = ed.midi.output;
+    if (!out) return;
     patternChans(ed.pattern).forEach(function (c) {
       out.send([0x90 | c, pitch, vel]);
       out.send([0x80 | c, pitch, 0], performance.now() + 150);
@@ -403,9 +420,18 @@
     if (stepRec.on) { stepRec.on = false; ui.stepBtn.classList.remove('active'); }
   }
 
+  function targetReady() {
+    if (ed.ch.midiTarget === 'int') {
+      if (!internalSynth) { ed.status('Internal synth unavailable.'); return false; }
+      return true;
+    }
+    if (!ed.midi.output) { ed.status('Select a MIDI clock out port first.'); return false; }
+    return true;
+  }
+
   function startPreview() {
     if (!ed || sess) return;
-    if (!ed.midi.output) { ed.status('Select a MIDI clock out port first.'); return; }
+    if (!targetReady()) return;
     endStepRec();
     var startF = ensureTransport();
     var lenF = Math.round(ed.pattern.bars * ed.engine.transport.barFrames());
@@ -415,7 +441,7 @@
 
   function startBounce() {
     if (!ed || sess) return;
-    if (!ed.midi.output) { ed.status('Select a MIDI clock out port first.'); return; }
+    if (!targetReady()) return;
     if (ed.ch.state !== 'empty' || ed.ch.pendingAction) {
       ed.status('Loop ' + ed.chLabel + ' is not empty — CLEAR it first to record the pattern.');
       return;
@@ -426,6 +452,11 @@
     var lenF = Math.round(ed.pattern.bars * ed.engine.transport.barFrames());
     sess = { mode: 'rec', startF: startF, lenF: lenF, endF: startF + lenF, schedFrom: null, closeSent: false };
     var ch = ed.ch;
+    // internal target: route PRIZM into the loop input so its audio is recorded
+    if (ch.midiTarget === 'int' && internalSynth) {
+      sess.wasRouted = !!internalSynth.loopDelay;
+      internalSynth.setLoopRoute(true);
+    }
     // widen the capture window by the measured MIDI/synth round trip so the
     // synth's late-arriving audio lands at the right loop positions
     ch.setComp(ed.engine.compFrames + Math.round(bounceCompMs / 1000 * ed.engine.ctx.sampleRate));
@@ -442,6 +473,7 @@
     if (sess.mode === 'rec' && ed && ed.ch.state !== 'playing') {
       ed.ch.stop();   // abort the take
       ed.ch.setComp(ed.engine.compFrames);
+      if (ed.ch.midiTarget === 'int' && internalSynth && !sess.wasRouted) internalSynth.setLoopRoute(false);
       ed.status('Recording aborted.');
     }
     sess = null;
@@ -494,7 +526,9 @@
   }
 
   function flushNotes() {
-    if (!ed || !ed.midi.output) return;
+    if (!ed) return;
+    if (ed.ch.midiTarget === 'int') { if (internalSynth) internalSynth.allOff(); return; }
+    if (!ed.midi.output) return;
     var out = ed.midi.output;
     patternChans(ed.pattern).forEach(function (c) {
       out.send([0xB0 | c, 123, 0]);
@@ -519,7 +553,6 @@
   function pump() {
     if (!ed || !sess) return;
     var eng = ed.engine, t = eng.transport;
-    var out = ed.midi.output;
     var sr = t.sr;
     var nowF = t.nowFrame();
 
@@ -532,6 +565,7 @@
       }
       if (ch.state === 'playing') {
         // bounce complete: pattern becomes the loop's MIDI, muted by default
+        if (ch.midiTarget === 'int' && internalSynth && !sess.wasRouted) internalSynth.setLoopRoute(false);
         ch.midiEvents = patternEvents(eng, ed.pattern);
         ch.midiMute = !ui.loopOut.checked;
         ch.seqPattern = ed.pattern;
@@ -545,9 +579,37 @@
       }
     }
 
-    if (!out) return;
     var horizon = nowF + 0.15 * sr;
     var from = sess.schedFrom === null ? nowF : sess.schedFrom;
+    emitNotes(from, horizon);
+    sess.schedFrom = horizon;
+  }
+
+  /* Send the pattern's notes for [from, horizon] to the current target. */
+  function emitNotes(from, horizon) {
+    var eng = ed.engine, sr = eng.transport.sr;
+    if (ed.ch.midiTarget === 'int' && internalSynth) {
+      var sf = stepFrames(eng);
+      ed.pattern.notes.forEach(function (n) {
+        var on = Math.round(n.step * sf);
+        var dur = Math.max(1, Math.round(n.len * sf));
+        if (sess.mode === 'rec') {
+          var absOn = sess.startF + on;
+          if (absOn > from && absOn <= horizon && absOn < sess.endF) {
+            internalSynth.playScheduled(n.pitch, n.vel / 127, absOn / sr, (absOn + dur) / sr);
+          }
+        } else {
+          var k = Math.floor((from - sess.startF - on) / sess.lenF) + 1;
+          if (k < 0) k = 0;
+          for (var f = sess.startF + on + k * sess.lenF; f <= horizon; f += sess.lenF) {
+            if (f > from) internalSynth.playScheduled(n.pitch, n.vel / 127, f / sr, (f + dur) / sr);
+          }
+        }
+      });
+      return;
+    }
+    var out = ed.midi.output;
+    if (!out) return;
     var evs = patternEvents(eng, ed.pattern);
     evs.forEach(function (ev) {
       if (sess.mode === 'rec') {
@@ -556,14 +618,13 @@
           out.send(ev.data, Math.max(performance.now(), eng.frameToPerf(absF)));
         }
       } else {
-        var k = Math.floor((from - sess.startF - ev.off) / sess.lenF) + 1;
-        if (k < 0) k = 0;
-        for (var f = sess.startF + ev.off + k * sess.lenF; f <= horizon; f += sess.lenF) {
-          if (f > from) out.send(ev.data, Math.max(performance.now(), eng.frameToPerf(f)));
+        var k2 = Math.floor((from - sess.startF - ev.off) / sess.lenF) + 1;
+        if (k2 < 0) k2 = 0;
+        for (var f2 = sess.startF + ev.off + k2 * sess.lenF; f2 <= horizon; f2 += sess.lenF) {
+          if (f2 > from) out.send(ev.data, Math.max(performance.now(), eng.frameToPerf(f2)));
         }
       }
     });
-    sess.schedFrom = horizon;
   }
 
   /* ---------------- step recording ---------------- */
@@ -659,6 +720,7 @@
     ui.bars.value = String(ed.pattern.bars);
     if (!ui.bars.value) { ui.bars.value = '2'; ed.pattern.bars = 2; }
     ui.chan.value = String(ed.pattern.chan);
+    ui.target.value = ch.midiTarget || 'ext';
     ui.overlay.classList.remove('hidden');
     ui.canvas.width = ui.canvas.clientWidth || 900;
     render();
@@ -680,5 +742,8 @@
     ui.overlay.classList.add('hidden');
   }
 
-  window.MidiSequencer = { open: open, handleMidi: handleMidi };
+  window.MidiSequencer = {
+    open: open, handleMidi: handleMidi,
+    setSynth: function (synth) { internalSynth = synth; }
+  };
 })();

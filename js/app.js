@@ -59,6 +59,7 @@
       prizm.buildUI($('prizm-panel'), $('prizm-ui'));
       wirePrizm();
       wireSong();
+      window.MidiSequencer.setSynth(prizm);   // "→ internal synth" target
 
       drums.fxRack = attachInstrumentFx(drums.out, 'drums-fx', 'drums-fx-btn');
       bass.fxRack = attachInstrumentFx(bass.out, 'bass-fx', 'bass-fx-btn');
@@ -660,11 +661,29 @@
      Look-ahead scheduler: sends each channel's captured events to the MIDI output,
      repeating every loop cycle, phase-locked via the channel's anchor frame. */
   function flushNotes(ch) {
+    if (ch.midiTarget === 'int') { if (prizm) prizm.allOff(); return; }
     if (!midi || !midi.output) return;
     ch.usedMidiChannels().forEach(function (c) {
       midi.output.send([0xB0 | c, 123, 0]);  // all notes off
       midi.output.send([0xB0 | c, 64, 0]);   // sustain off
     });
+  }
+
+  /* Pair a channel's note-on/off events into notes (for internal-synth scheduling). */
+  function loopNotePairs(ch) {
+    var open = {}, notes = [];
+    ch.midiEvents.forEach(function (ev) {
+      var hi = ev.data[0] & 0xF0, pitch = ev.data[1];
+      if (hi === 0x90 && ev.data[2] > 0) open[pitch] = { on: ev.off, vel: ev.data[2] };
+      else if ((hi === 0x80 || hi === 0x90) && open[pitch] !== undefined) {
+        notes.push({ on: open[pitch].on, off: ev.off, pitch: pitch, vel: open[pitch].vel });
+        delete open[pitch];
+      }
+    });
+    Object.keys(open).forEach(function (p) {   // still-open: close at loop end
+      notes.push({ on: open[p].on, off: ch.lenFrames, pitch: parseInt(p, 10), vel: open[p].vel });
+    });
+    return notes;
   }
 
   function midiLoopPump() {
@@ -674,29 +693,44 @@
     var horizon = nowF + 0.2 * sr;
     strips.forEach(function (s) {
       var ch = s.ch;
+      var internal = ch.midiTarget === 'int';
+      var sink = internal ? prizm : (midi && midi.output);
       var active = (ch.state === 'playing' || ch.state === 'overdubbing') &&
-        ch.lenFrames > 0 && ch.midiEvents.length > 0 && midi.output && !ch.midiMute;
+        ch.lenFrames > 0 && ch.midiEvents.length > 0 && sink && !ch.midiMute;
       if (!active) {
         if (ch.schedFrom !== null) { flushNotes(ch); ch.schedFrom = null; }
         return;
       }
       var from = (ch.schedFrom === null || ch.schedFrom < nowF) ? nowF : ch.schedFrom;
       var anchor = ch.anchorFrame, len = ch.lenFrames;
-      ch.midiEvents.forEach(function (ev) {
-        var data = ev.data;
-        if (ch.transpose) {
-          var hi = data[0] & 0xF0;
-          if (hi === 0x90 || hi === 0x80) {
-            data = [data[0], Math.max(0, Math.min(127, data[1] + ch.transpose)), data[2]];
+      if (internal) {
+        loopNotePairs(ch).forEach(function (n) {
+          var pitch = Math.max(0, Math.min(127, n.pitch + (ch.transpose || 0)));
+          var dur = n.off - n.on; if (dur <= 0) dur += len;
+          var k = Math.floor((from - anchor - n.on) / len) + 1;
+          var f = anchor + n.on + k * len;
+          while (f <= horizon) {
+            prizm.playScheduled(pitch, n.vel / 127, f / sr, (f + dur) / sr);
+            f += len;
           }
-        }
-        var k = Math.floor((from - anchor - ev.off) / len) + 1;
-        var f = anchor + ev.off + k * len;
-        while (f <= horizon) {
-          midi.output.send(data, Math.max(performance.now(), engine.frameToPerf(f)));
-          f += len;
-        }
-      });
+        });
+      } else {
+        ch.midiEvents.forEach(function (ev) {
+          var data = ev.data;
+          if (ch.transpose) {
+            var hi = data[0] & 0xF0;
+            if (hi === 0x90 || hi === 0x80) {
+              data = [data[0], Math.max(0, Math.min(127, data[1] + ch.transpose)), data[2]];
+            }
+          }
+          var k = Math.floor((from - anchor - ev.off) / len) + 1;
+          var f = anchor + ev.off + k * len;
+          while (f <= horizon) {
+            midi.output.send(data, Math.max(performance.now(), engine.frameToPerf(f)));
+            f += len;
+          }
+        });
+      }
       ch.schedFrom = horizon;
     });
   }

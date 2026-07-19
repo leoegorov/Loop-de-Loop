@@ -393,6 +393,7 @@
     this.lastNoteOnAbs = 0;     // absolute frame of last note-on while recording
     this.midiEvents = [];       // { off: frames-from-loop-start, data: [st,d1,d2] }
     this.midiMute = false;      // suppress looped MIDI output (e.g. after a sequencer bounce)
+    this.midiTarget = 'ext';    // 'ext' = external MIDI port, 'int' = internal PRIZM synth
     this.transpose = 0;         // semitones; audio shifts granularly, MIDI notes shift with it
     this.seqPattern = null;     // sequencer pattern for this channel { bars, chan, notes }
     this.pendingMidi = [];      // { f: absolute frame, data } captured while rec/overdub

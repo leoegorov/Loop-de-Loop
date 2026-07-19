@@ -172,10 +172,14 @@ directly, latency-compensated, so you can loop the synth without any cabling.
 bars). Click to place notes (they preview as you place them), **drag a note to move
 it** in pitch and time, **drag its right edge to resize** (or keep dragging while
 placing to draw the length), **scroll the wheel over a note to change its velocity**
-(shown as note brightness), and a plain click on a note deletes it. The pattern
-plays out of the *MIDI clock out* port on a chosen MIDI channel — or **OMNI**, which
-broadcasts every note on all 16 channels so it reaches your synth regardless of
-which channel it listens on:
+(shown as note brightness), and a plain click on a note deletes it.
+
+The **Out** selector chooses where the loop's MIDI plays: the external **MIDI port**
+(on a chosen channel, or **OMNI** to broadcast on all 16), or the built-in **PRIZM
+synth** — so a loop can drive PRIZM internally with no external gear or cabling.
+Preview, PREVIEW, the looped MIDI playback, and ⏺ REC LOOP (which auto-routes PRIZM
+into the loop input to record it) all follow the selected target. When targeting the
+external port:
 
 - **PREVIEW** loops the pattern to your synth (starts the clock if needed).
 - **⏺ REC LOOP** is the point of it: the pattern plays once from the next bar and the
