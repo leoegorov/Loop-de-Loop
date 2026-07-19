@@ -58,6 +58,7 @@
       prizm = new window.Prizm(engine);
       prizm.buildUI($('prizm-panel'), $('prizm-ui'));
       wirePrizm();
+      wireSong();
 
       drums.fxRack = attachInstrumentFx(drums.out, 'drums-fx', 'drums-fx-btn');
       bass.fxRack = attachInstrumentFx(bass.out, 'bass-fx', 'bass-fx-btn');
@@ -217,6 +218,7 @@
     });
 
     $('reset-btn').addEventListener('click', function () {
+      if (window.SongArranger && window.SongArranger.isPlaying()) window.SongArranger.stop();
       engine.resetAll();
       midi.stopClock();
       if (drums) {
@@ -361,15 +363,49 @@
   /* Insert an FxRack between an instrument's output and the master bus. */
   function attachInstrumentFx(sourceNode, containerId, btnId) {
     var rack = new window.FxRack(engine);
+    var gate = engine.ctx.createGain();   // song-arrangement gate
     sourceNode.disconnect();
     sourceNode.connect(rack.input);
-    rack.output.connect(engine.masterGain);
+    rack.output.connect(gate);
+    gate.connect(engine.masterGain);
     rack.mountUI($(containerId));
     $(btnId).addEventListener('click', function () {
       $(containerId).classList.toggle('hidden');
       this.classList.toggle('active', !$(containerId).classList.contains('hidden'));
     });
+    rack.songGate = gate;
     return rack;
+  }
+
+  /* ---------------- song arranger ---------------- */
+  function setDrumsOn(on) {
+    drums.enabled = on;
+    $('drums-toggle').classList.toggle('active', on);
+  }
+  function setBassOn(on) {
+    bass.enabled = on;
+    if (!on) bass.silence();
+    $('bass-toggle').classList.toggle('active', on);
+  }
+  function songContext() {
+    return {
+      engine: engine, drums: drums, bass: bass,
+      drumsGate: drums.fxRack.songGate,
+      bassGate: bass.fxRack.songGate,
+      loopTracks: function () {
+        return strips
+          .filter(function (s) { return s.ch.lenFrames > 0 && (s.ch.state === 'playing' || s.ch.state === 'stopped'); })
+          .map(function (s) { return { id: s.ch.id, label: 'LOOP ' + (strips.indexOf(s) + 1), gate: s.ch.songGain, ch: s.ch }; });
+      },
+      setDrums: setDrumsOn,
+      setBass: setBassOn,
+      status: status
+    };
+  }
+  function wireSong() {
+    $('song-btn').addEventListener('click', function () {
+      window.SongArranger.toggle(songContext());
+    });
   }
 
   /* ---------------- PRIZM synth ---------------- */
@@ -394,6 +430,7 @@
 
   /* ---------------- stop all / play all (loops + 808 + 303) ---------------- */
   function stopEverything() {
+    if (window.SongArranger && window.SongArranger.isPlaying()) window.SongArranger.stop();
     engine.stopAll();
     midi.sendStop();
     if (drums.enabled) {

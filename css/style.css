@@ -143,6 +143,27 @@ body {
 .drum-row .step.now { outline: 2px solid var(--accent); outline-offset: -2px; }
 .drum-level { width: 5rem; flex: none; accent-color: var(--od); margin-left: 0.3rem; }
 
+/* ---- song arranger ---- */
+#song-panel {
+  background: var(--panel);
+  border-bottom: 1px solid var(--edge);
+  padding: 0.6rem 0.9rem;
+}
+.song-title { color: var(--rec) !important; }
+#song-panel .drum-head label { font-size: 0.72rem; text-transform: uppercase; color: var(--dim); }
+#song-panel .drum-head select {
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--edge); border-radius: 4px; padding: 0.2rem; font-size: 0.72rem;
+}
+#song-panel .drum-head button {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--edge);
+  border-radius: 5px; padding: 0.3rem 0.7rem; cursor: pointer; font-size: 0.75rem;
+}
+#song-panel .drum-head button:hover { border-color: var(--rec); }
+.song-play { color: var(--play) !important; }
+.song-scroll { overflow-x: auto; overflow-y: hidden; }
+.song-canvas { display: block; cursor: pointer; touch-action: none; }
+
 /* ---- TB-303 bass ---- */
 #bass-panel {
   background: var(--panel);

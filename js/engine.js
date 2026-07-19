@@ -413,11 +413,13 @@
       processorOptions: { comp: engine.compFrames }
     });
     this.gain = ctx.createGain();
+    this.songGain = ctx.createGain();   // arrangement gate (1 = audible, scheduled by the song player)
     this.rack = new window.FxRack(engine);
     engine.inputNode.connect(this.node);
     this.node.connect(this.rack.input);
     this.rack.output.connect(this.gain);
-    this.gain.connect(engine.masterGain);
+    this.gain.connect(this.songGain);
+    this.songGain.connect(engine.masterGain);
 
     this.node.port.onmessage = function (e) {
       var m = e.data;
@@ -644,6 +646,7 @@
     this.node.disconnect();
     this.rack.dispose();
     this.gain.disconnect();
+    this.songGain.disconnect();
   };
 
   /* ---------------- engine ---------------- */
@@ -760,6 +763,19 @@
       c.node.port.postMessage(msg);
       if (c.onUpdate) c.onUpdate();
     });
+  };
+  /* Play one channel at an explicit frame (song arranger). Grid loops rejoin in
+     phase; free loops restart at 0. No-op if already playing or nothing to play. */
+  LoopChannel.prototype.songPlayAt = function (frame) {
+    if (this.state !== 'stopped') return;
+    var bf = this.engine.transport.beatFrames();
+    var beats = this.lenFrames / bf;
+    var gridLen = this.lenFrames > 0 && Math.abs(beats - Math.round(beats)) < 0.01;
+    var msg = { cmd: 'schedule', action: 'play', frame: frame, free: !gridLen };
+    if (this.loadedNeedsAnchor) { msg.anchor = frame; this.loadedNeedsAnchor = false; }
+    this.pendingAction = 'play';
+    this.node.port.postMessage(msg);
+    if (this.onUpdate) this.onUpdate();
   };
   Engine.prototype.resetAll = function () {
     this.channels.forEach(function (c) { c.clear(); });

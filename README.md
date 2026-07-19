@@ -199,6 +199,18 @@ which channel it listens on:
   and captures the full tail. The first-ever bounce self-corrects a moment after
   closing; takes after that are aligned from the start.
 
+### Song arranger
+
+**SONG** (top bar) opens a bar-grid arrangement timeline. Each track — every loop
+channel, plus **DRUMS** and **303** — has a lane of bars you paint active/inactive
+(click or drag; pick a song length of 8–64 bars). **▶ PLAY SONG** plays the whole
+arrangement: loops come in and drop out at the bars you painted (playing in phase),
+and the drum and 303 patterns gate in and out with them, with a red playhead
+sweeping the grid. The entire arrangement's mutes are scheduled up front on the
+audio clock, so it stays perfectly in time. **loop song** repeats it; **STOP** (or
+Space / RESET) ends it. Loop lanes are keyed to each channel so your arrangement
+sticks to the right loops as you add or remove channels.
+
 ### Export / import
 
 **EXPORT** downloads a zip with one WAV stem + one MIDI file per loop and a
