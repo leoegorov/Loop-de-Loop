@@ -374,6 +374,7 @@ body {
   border: 1px solid var(--edge); border-radius: 3px; font-size: 0.62rem; padding: 0.05rem;
 }
 .fx-auto input { width: 100%; accent-color: var(--queued); }
+.fx-param .val.auto-live { color: var(--queued); font-weight: 600; }
 
 .fx-rack { display: flex; flex-direction: column; gap: 0.45rem; }
 .fx-rack .fx-list { display: flex; flex-direction: column; gap: 0.45rem; }

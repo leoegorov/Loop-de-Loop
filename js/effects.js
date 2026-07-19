@@ -262,15 +262,34 @@
   /* ---------------- FxRack ---------------- */
   var racks = [];
   var ticker = null;
+  var TICK_MS = 16;             // ~60 Hz control rate (smooth even on fast LFO rates)
 
+  /* Continuous musical phase in beats. Bar-locked while the transport runs (so
+     sweeps land on bar lines), free-running from the same value when it stops —
+     no jump at start/stop, which would otherwise glitch a live sweep. */
+  var phaseBeats = 0, lastWallMs = null;
+  function currentBeats(t) {
+    var nowMs = performance.now();
+    if (t.running) {
+      phaseBeats = (t.nowFrame() - t.origin) / t.beatFrames();
+      lastWallMs = nowMs;
+    } else {
+      if (lastWallMs === null) lastWallMs = nowMs;
+      phaseBeats += (nowMs - lastWallMs) / 1000 * t.bpm / 60;
+      lastWallMs = nowMs;
+    }
+    return phaseBeats;
+  }
+
+  var dispTick = 0;
   function tickAll() {
+    dispTick++;
+    var showNow = (dispTick % 4) === 0;   // refresh readouts ~15 Hz, not every frame
+    var t = racks.length ? racks[0].engine.transport : null;
+    if (!t) return;
+    var beats = currentBeats(t);
     for (var r = 0; r < racks.length; r++) {
       var rack = racks[r];
-      var t = rack.engine.transport;
-      if (!t) continue;
-      var beats = t.running
-        ? (t.nowFrame() - t.origin) / t.beatFrames()
-        : performance.now() / 1000 * t.bpm / 60;
       for (var f = 0; f < rack.fx.length; f++) {
         var entry = rack.fx[f];
         if (entry.inst.tick) entry.inst.tick(t);
@@ -293,7 +312,7 @@
             v = Math.min(p.max, Math.max(p.min, entry.values[p.id] + lfo * span2));
           }
           entry.inst.set(p.id, v);
-          if (entry.outEls && entry.outEls[p.id]) entry.outEls[p.id].textContent = fmtVal(p, v);
+          if (showNow && entry.outEls && entry.outEls[p.id]) entry.outEls[p.id].textContent = fmtVal(p, v);
         }
       }
     }
@@ -307,7 +326,7 @@
     this.fx = [];        // { key, def, inst, values, autos, card, outEls }
     this.listEl = null;
     racks.push(this);
-    if (!ticker) ticker = setInterval(tickAll, 33);
+    if (!ticker) ticker = setInterval(tickAll, TICK_MS);
   }
 
   FxRack.prototype.addFx = function (key) {
@@ -484,6 +503,7 @@
           a.on = !a.on;
           ab.classList.toggle('on', a.on);
           arow.classList.toggle('hidden', !a.on);
+          val.classList.toggle('auto-live', a.on);   // readout glows while automating
           if (!a.on) {
             entry.inst.set(p.id, entry.values[p.id]);
             val.textContent = fmtVal(p, entry.values[p.id]);
