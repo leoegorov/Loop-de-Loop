@@ -211,8 +211,11 @@ C, …). A highlighted letter shows the active slot, filled letters show which h
 content, and switching slots saves your edit automatically.
 
 **SONG** (top bar) opens a bar-grid arrangement timeline. Each track — every loop
-channel, plus one lane per **DRUMS** and **303** pattern slot you've used — has a
-lane of bars you paint active/inactive (click or drag; song length 8–64 bars). So
+channel (its length shown in brackets, e.g. "LOOP 1 (4)"), plus one lane per
+**DRUMS** and **303** pattern slot you've used — has a lane of bars. Loop lanes are
+**clip-based**: a 4-bar loop drops as a 4-bar block, snapped so each block starts the
+loop from bar 1 (which also keeps it phase-aligned); block dividers mark each repeat.
+Drum/303 lanes paint per bar. Song length 8–64 bars. So
 different sections can call up different drum and bass patterns: paint DRUMS A over
 the intro bars and DRUMS B over the chorus. Drum/303 slot lanes are mutually
 exclusive per bar (one pattern at a time). **▶ PLAY SONG** plays the whole

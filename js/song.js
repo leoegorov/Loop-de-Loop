@@ -33,10 +33,12 @@
 
   function buildTracks() {
     tracks = [];
+    var bf = ctx.engine.transport.barFrames();
     ctx.loopTracks().forEach(function (lt) {
       var key = 'loop:' + lt.id;   // stable across added/removed channels
-      tracks.push({ key: key, label: lt.label, kind: 'loop', group: key, color: COLORS.loop,
-        cells: cellsFor(key), gate: lt.gate, ch: lt.ch });
+      var loopBars = Math.max(1, Math.round(lt.ch.lenFrames / bf));
+      tracks.push({ key: key, label: lt.label + ' (' + loopBars + ')', kind: 'loop', group: key,
+        color: COLORS.loop, cells: cellsFor(key), gate: lt.gate, ch: lt.ch, loopBars: loopBars });
     });
     addSlotLanes(ctx.drums, 'drums', 'DRUMS', COLORS.drums);
     addSlotLanes(ctx.bass, 'bass', '303', COLORS.bass);
@@ -120,8 +122,15 @@
       if (bar < 0 || bar >= bars || row < 0 || row >= tracks.length) return null;
       return { bar: bar, row: row };
     }
+    /* Loop lanes place whole loop-length blocks, snapped so each block starts the
+       loop from bar 1 (which also keeps it phase-aligned on playback). */
     function setCell(row, bar, val) {
       var tr = tracks[row];
+      if (tr.kind === 'loop' && tr.loopBars > 1) {
+        var start = Math.floor(bar / tr.loopBars) * tr.loopBars;
+        for (var b = start; b < start + tr.loopBars && b < bars; b++) tr.cells[b] = val;
+        return;
+      }
       tr.cells[bar] = val;
       // instrument slots are mutually exclusive per bar (one pattern at a time)
       if (val && (tr.group === 'drums' || tr.group === 'bass')) {
@@ -130,12 +139,18 @@
         });
       }
     }
+    function blockActive(tr, bar) {
+      if (tr.kind === 'loop' && tr.loopBars > 1) {
+        return tr.cells[Math.floor(bar / tr.loopBars) * tr.loopBars];
+      }
+      return tr.cells[bar];
+    }
     canvas.addEventListener('pointerdown', function (e) {
       var c = cellAt(e);
       if (!c) return;
       painting = true;
       canvas.setPointerCapture(e.pointerId);
-      paintVal = tracks[c.row].cells[c.bar] ? 0 : 1;
+      paintVal = blockActive(tracks[c.row], c.bar) ? 0 : 1;
       setCell(c.row, c.bar, paintVal);
       render();
     });
@@ -143,7 +158,7 @@
       if (!painting) return;
       var c = cellAt(e);
       if (!c) return;
-      if (tracks[c.row].cells[c.bar] !== paintVal) {
+      if (blockActive(tracks[c.row], c.bar) !== paintVal) {
         setCell(c.row, c.bar, paintVal);
         render();
       }
@@ -181,15 +196,27 @@
       g.fillStyle = t.color;
       g.font = '10px sans-serif';
       g.fillText(t.label, 6, y + ROW_H / 2 + 3);
-      // cells
-      for (var bi = 0; bi < bars; bi++) {
-        var cx = GUTTER + bi * CELL_W;
+      // clips
+      var lb = (t.kind === 'loop' && t.loopBars > 1) ? t.loopBars : 1;
+      for (var bi = 0; bi < bars; ) {
         if (t.cells[bi]) {
+          // extent of this contiguous active run
+          var end = bi; while (end < bars && t.cells[end]) end++;
+          var x0 = GUTTER + bi * CELL_W;
           g.fillStyle = t.color;
           g.globalAlpha = 0.85;
-          g.fillRect(cx + 1, y + 2, CELL_W - 2, ROW_H - 4);
+          g.fillRect(x0 + 1, y + 2, (end - bi) * CELL_W - 2, ROW_H - 4);
           g.globalAlpha = 1;
-        }
+          // loop-length block dividers within the run (each block = one loop pass)
+          if (lb > 1) {
+            g.strokeStyle = 'rgba(6,7,13,0.55)';
+            for (var d = bi + lb; d < end; d += lb) {
+              var dx = GUTTER + d * CELL_W;
+              g.beginPath(); g.moveTo(dx + 0.5, y + 2); g.lineTo(dx + 0.5, y + ROW_H - 2); g.stroke();
+            }
+          }
+          bi = end;
+        } else bi++;
       }
     }
 
