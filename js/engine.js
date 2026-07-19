@@ -30,6 +30,8 @@
     '    this.perfectAt = Infinity;  // input-clock frame after which the perfect pass may run',
     '    this.pitchRate = 1;          // 2^(semitones/12); granular playback when != 1',
     '    this.grain = 2 * Math.round(sampleRate * 0.04);',
+    '    this.xfL = null; this.xfR = null;   // post-close tail for the seam crossfade',
+    '    this.xfLen = 0; this.xfGot = 0; this.xfStart = Infinity;',
     '    this.maxFrames = sampleRate * 300;',
     '    this.blockCount = 0;',
     '    var self = this;',
