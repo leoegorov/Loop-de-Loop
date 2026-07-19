@@ -205,10 +205,10 @@ external port:
 
 ### Song arranger
 
-The 808 and 303 each have a **4-slot pattern bank** (A/B/C/D buttons in their
-panels) — switch slots to build different patterns; a highlighted letter shows the
-active slot, and filled letters show which slots hold content. Switching slots saves
-your edit automatically.
+The 808 and 303 each have a **pattern bank** (lettered buttons in their panels) —
+switch slots to build different patterns, and **+** adds a new one on demand (A, B,
+C, …). A highlighted letter shows the active slot, filled letters show which hold
+content, and switching slots saves your edit automatically.
 
 **SONG** (top bar) opens a bar-grid arrangement timeline. Each track — every loop
 channel, plus one lane per **DRUMS** and **303** pattern slot you've used — has a
@@ -221,6 +221,8 @@ gated sample-accurately on the audio clock), and the drum/303 pumps play whichev
 pattern each bar calls for, with a red playhead sweeping the grid. **loop song**
 repeats it; **STOP** (or Space / RESET) ends it. Loop lanes are keyed to each
 channel so your arrangement sticks to the right loops as you add or remove channels.
+The grid has zoom (– / +) and a draggable bottom edge; the SEQ piano-roll editor is
+resizable from its corner — both grow to fill for easier editing.
 
 ### Export / import
 

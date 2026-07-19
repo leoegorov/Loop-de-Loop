@@ -380,31 +380,39 @@
     return rack;
   }
 
-  /* Build an A/B/C/D pattern-bank selector for an instrument (drums / 303). */
+  function slotName(i) { return i < 26 ? String.fromCharCode(65 + i) : String(i + 1); }
+
+  /* Build a dynamic pattern-bank selector for an instrument (drums / 303):
+     one button per pattern slot plus a "+" to add new patterns on demand. */
   function buildPatternBank(containerId, inst, label) {
     var el = $(containerId);
-    var names = ['A', 'B', 'C', 'D'];
-    var btns = [];
-    names.forEach(function (nm, i) {
-      var b = document.createElement('button');
-      b.className = 'pat-slot' + (i === inst.curSlot ? ' active' : '');
-      b.textContent = nm;
-      b.addEventListener('click', function () {
-        inst.switchSlot(i);
-        btns.forEach(function (x, j) { x.classList.toggle('active', j === i); });
-        refreshBankDots();
-        status(label + ' pattern ' + nm + '.');
+    function render() {
+      el.innerHTML = '';
+      inst.patterns.forEach(function (p, i) {
+        var b = document.createElement('button');
+        b.className = 'pat-slot' + (i === inst.curSlot ? ' active' : '') +
+          (i === inst.curSlot || inst.slotHasContent(i) ? ' has' : '');
+        b.textContent = slotName(i);
+        b.addEventListener('click', function () {
+          inst.switchSlot(i);
+          render();
+          status(label + ' pattern ' + slotName(i) + '.');
+        });
+        el.appendChild(b);
       });
-      el.appendChild(b);
-      btns.push(b);
-    });
-    function refreshBankDots() {
-      btns.forEach(function (b, i) {
-        b.classList.toggle('has', i === inst.curSlot || inst.slotHasContent(i));
+      var add = document.createElement('button');
+      add.className = 'pat-add';
+      add.textContent = '+';
+      add.title = 'Add a new empty pattern';
+      add.addEventListener('click', function () {
+        inst.addSlot();
+        render();
+        status(label + ' pattern ' + slotName(inst.curSlot) + ' added.');
       });
+      el.appendChild(add);
     }
-    refreshBankDots();
-    return { btns: btns, refresh: refreshBankDots };
+    render();
+    return { render: render };
   }
 
   /* ---------------- song arranger ---------------- */

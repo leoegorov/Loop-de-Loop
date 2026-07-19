@@ -13,15 +13,13 @@
     cp: { label: 'CLAP', level: 0.75 }
   };
 
-  var SLOTS = 4;             // pattern bank A/B/C/D
-
   function DrumMachine(engine) {
     this.engine = engine;
     this.enabled = false;
     this.rows = [];          // { kind:'synth'|'sample', synth, label, buffer, steps:[bool], level, cells, el, _last }
     this.grid = null;
     this.schedFrom = null;
-    this.patterns = new Array(SLOTS).fill(null);  // each slot = [stepsArray per row] snapshot
+    this.patterns = [null];  // pattern bank, grows on demand; each slot = [stepsArray per row] snapshot
     this.curSlot = 0;
     this.songSource = null;  // when set: fn(frame)->steps-per-row or null (song playback)
     this.openHatGain = null; // closed hat chokes the open hat, 808 style
@@ -125,6 +123,13 @@
     this.syncSlot();
     this.curSlot = i;
     this.loadSlot(i);
+  };
+  DrumMachine.prototype.addSlot = function () {   // add a new empty pattern and switch to it
+    this.syncSlot();
+    this.patterns.push(null);
+    this.curSlot = this.patterns.length - 1;
+    this.loadSlot(this.curSlot);
+    return this.curSlot;
   };
 
   /* ---- voices ---- */

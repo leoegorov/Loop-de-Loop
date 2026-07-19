@@ -432,7 +432,7 @@
       sel.appendChild(opt);
     });
     var btn = document.createElement('button');
-    btn.textContent = '＋';
+    btn.textContent = '+';
     btn.title = 'Add effect';
     btn.addEventListener('click', function () { self.addFx(sel.value); });
     add.appendChild(sel); add.appendChild(btn);

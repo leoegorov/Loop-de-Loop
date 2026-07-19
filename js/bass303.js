@@ -16,7 +16,7 @@
     this.schedFrom = null;
     this.pattern = [];
     for (var i = 0; i < 16; i++) this.pattern.push({ pitch: null, acc: false, slide: false });
-    this.patterns = [null, null, null, null];   // bank A/B/C/D, each = 16-step snapshot
+    this.patterns = [null];   // pattern bank, grows on demand; each slot = 16-step snapshot
     this.curSlot = 0;
     this.songSource = null;   // when set: fn(frame)->16-step pattern or null (song playback)
 
@@ -91,6 +91,13 @@
     this.syncSlot();
     this.curSlot = i;
     this.loadSlot(i);
+  };
+  Bass303.prototype.addSlot = function () {
+    this.syncSlot();
+    this.patterns.push(null);
+    this.curSlot = this.patterns.length - 1;
+    this.loadSlot(this.curSlot);
+    return this.curSlot;
   };
 
   /* ---- voice scheduling ---- */

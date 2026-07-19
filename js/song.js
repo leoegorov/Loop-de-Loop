@@ -5,7 +5,8 @@
 (function () {
   'use strict';
 
-  var GUTTER = 78, ROW_H = 26, RULER = 16, CELL_W = 20;
+  var GUTTER = 78, RULER = 16;
+  var ROW_H = 26, CELL_W = 20;          // zoomable
   var COLORS = { loop: '#4da3ff', drums: '#ffa229', bass: '#3ddc84' };
 
   var ui = null;
@@ -28,7 +29,7 @@
     return out;
   }
 
-  var SLOT_NAMES = ['A', 'B', 'C', 'D'];
+  function slotName(i) { return i < 26 ? String.fromCharCode(65 + i) : String(i + 1); }
 
   function buildTracks() {
     tracks = [];
@@ -46,10 +47,10 @@
   function addSlotLanes(inst, kind, prefix, color) {
     inst.syncSlot();   // persist the live edit into its slot first
     var shown = 0;
-    for (var i = 0; i < 4; i++) {
+    for (var i = 0; i < inst.patterns.length; i++) {
       if (inst.slotHasContent(i) || i === inst.curSlot) {
         var key = kind + ':' + i;
-        tracks.push({ key: key, label: prefix + ' ' + SLOT_NAMES[i], kind: kind, group: kind,
+        tracks.push({ key: key, label: prefix + ' ' + slotName(i), kind: kind, group: kind,
           slot: i, color: color, cells: cellsFor(key), inst: inst });
         shown++;
       }
@@ -72,7 +73,8 @@
         '<button class="song-stop">■ STOP</button>' +
         '<label class="chk"><input type="checkbox" class="song-loop"> loop song</label>' +
         '<button class="song-clear">CLEAR</button>' +
-        '<span class="hint">paint bars per track · loops play in phase, drums/303 gate in and out</span>' +
+        '<span class="song-zoom"><button class="song-zo" title="Smaller">–</button><button class="song-zi" title="Bigger">+</button></span>' +
+        '<span class="hint">paint bars per track · loops play in phase, drums/303 swap patterns per bar</span>' +
       '</div>' +
       '<div class="song-scroll"><canvas class="song-canvas"></canvas></div>';
     document.body.insertBefore(panel, document.getElementById('channels'));
@@ -93,6 +95,13 @@
       render();
     });
     ui.loop.addEventListener('change', function () { loopSong = this.checked; });
+    function zoom(delta) {
+      CELL_W = Math.max(10, Math.min(48, CELL_W + delta));
+      ROW_H = Math.max(18, Math.min(52, ROW_H + delta));
+      layout(); render();
+    }
+    panel.querySelector('.song-zo').addEventListener('click', function () { zoom(-4); });
+    panel.querySelector('.song-zi').addEventListener('click', function () { zoom(4); });
     panel.querySelector('.song-play').addEventListener('click', play);
     panel.querySelector('.song-stop').addEventListener('click', stop);
     panel.querySelector('.song-clear').addEventListener('click', function () {

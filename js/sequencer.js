@@ -304,6 +304,19 @@
       ui.velVal.textContent = hit.vel;
       render();
     }, { passive: false });
+
+    // resizable editor: keep the canvas backing store matched to its display size
+    if (window.ResizeObserver) {
+      var ro = new ResizeObserver(function () {
+        if (!ed) return;
+        var w = canvas.clientWidth, h = canvas.clientHeight;
+        if (w && h && (w !== canvas.width || h !== canvas.height)) {
+          canvas.width = w; canvas.height = h;
+          render();
+        }
+      });
+      ro.observe(canvas);
+    }
   }
 
   function previewNote(pitch) {
@@ -723,6 +736,7 @@
     ui.target.value = ch.midiTarget || 'ext';
     ui.overlay.classList.remove('hidden');
     ui.canvas.width = ui.canvas.clientWidth || 900;
+    ui.canvas.height = ui.canvas.clientHeight || 392;
     render();
     if (!pumpTimer) pumpTimer = setInterval(pump, 25);
     if (!rafOn) { rafOn = true; requestAnimationFrame(playheadLoop); }

@@ -1,17 +1,17 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>LOOPING â€” software loop station</title>
+<title>LOOPING — software loop station</title>
 <script>
-/* Audio worklet, microphone and Web MIDI only exist on secure origins â€” bounce
+/* Audio worklet, microphone and Web MIDI only exist on secure origins — bounce
    plain-http visitors (e.g. via an old redirect) to https. */
 if (location.protocol === 'http:' && !/^(localhost|127\.|\[?::1)/.test(location.hostname)) {
   location.replace('https:' + location.href.slice(5));
 }
 </script>
-<link rel="stylesheet" href="css/style.css?v=7">
+<link rel="stylesheet" href="css/style.css?v=9">
 </head>
 <body>
 
@@ -34,7 +34,7 @@ if (location.protocol === 'http:' && !/^(localhost|127\.|\[?::1)/.test(location.
                 stroke-linecap="round" stroke-linejoin="round"/>
     </svg>
     <h1>LOOPING</h1>
-    <p>Software loop station â€” MIDI clock out, unlimited loop channels, per-channel FX.</p>
+    <p>Software loop station — MIDI clock out, unlimited loop channels, per-channel FX.</p>
     <button id="power-btn">POWER ON</button>
     <p class="hint">Grants microphone + MIDI access. Use Chrome or Edge.</p>
     <p id="power-msg"></p>
@@ -93,7 +93,7 @@ if (location.protocol === 'http:' && !/^(localhost|127\.|\[?::1)/.test(location.
 
   <div class="tb-group">
     <label>MIDI clock out</label>
-    <select id="midiout-select"><option value="">â€” none â€”</option></select>
+    <select id="midiout-select"><option value="">— none —</option></select>
     <span id="clock-led" title="MIDI clock running"></span>
   </div>
 
@@ -136,7 +136,7 @@ if (location.protocol === 'http:' && !/^(localhost|127\.|\[?::1)/.test(location.
     <label>Vol</label>
     <input type="range" id="drums-vol" min="0" max="1.5" step="0.01" value="0.9">
     <button id="drums-clear" title="Clear the whole pattern">CLEAR</button>
-    <span class="pat-bank" id="drum-bank" title="Pattern slots â€” click to switch (arrange them per-section in SONG)"></span>
+    <span class="pat-bank" id="drum-bank" title="Pattern slots — click to switch (arrange them per-section in SONG)"></span>
     <select id="drum-add-type" title="Voice to add">
       <option value="bd">Kick</option>
       <option value="sd">Snare</option>
@@ -144,11 +144,11 @@ if (location.protocol === 'http:' && !/^(localhost|127\.|\[?::1)/.test(location.
       <option value="oh">Op Hat</option>
       <option value="cp">Clap</option>
     </select>
-    <button id="drum-add-voice" title="Add another row of the selected synth voice">ï¼‹ VOICE</button>
-    <button id="drum-add-sample" title="Add a row that plays an imported audio file (wav/mp3/ogg)">ï¼‹ SAMPLE</button>
+    <button id="drum-add-voice" title="Add another row of the selected synth voice">+ VOICE</button>
+    <button id="drum-add-sample" title="Add a row that plays an imported audio file (wav/mp3/ogg)">+ SAMPLE</button>
     <input type="file" id="drum-sample-file" accept="audio/*" multiple style="display:none">
     <button id="drums-fx-btn" title="Effects on the drum bus (with automation)">FX</button>
-    <span class="hint">16ths of the master bar Â· per-row step count â‰  16 = polyrhythm Â· click names to preview</span>
+    <span class="hint">16ths of the master bar · per-row step count ≠ 16 = polyrhythm · click names to preview</span>
   </div>
   <div id="drum-grid"></div>
   <div id="drums-fx" class="inst-fx hidden"></div>
@@ -173,9 +173,9 @@ if (location.protocol === 'http:' && !/^(localhost|127\.|\[?::1)/.test(location.
     <label>Decay</label>
     <input type="range" id="bass-decay" min="0.03" max="1" step="0.01" value="0.25">
     <button id="bass-clear" title="Clear the whole pattern">CLEAR</button>
-    <span class="pat-bank" id="bass-bank" title="Pattern slots â€” click to switch (arrange them per-section in SONG)"></span>
+    <span class="pat-bank" id="bass-bank" title="Pattern slots — click to switch (arrange them per-section in SONG)"></span>
     <button id="bass-fx-btn" title="Effects on the 303 bus (with automation)">FX</button>
-    <span class="hint">one note per step Â· ACC = accent Â· SLD = slide to next note</span>
+    <span class="hint">one note per step · ACC = accent · SLD = slide to next note</span>
   </div>
   <div id="bass-grid"></div>
   <div id="bass-fx" class="inst-fx hidden"></div>
@@ -185,11 +185,11 @@ if (location.protocol === 'http:' && !/^(localhost|127\.|\[?::1)/.test(location.
   <div class="drum-head">
     <span class="drum-title prizm-title">PRIZM-2</span>
     <label class="chk" title="Play PRIZM from incoming (unmapped) MIDI notes, velocity-sensitive"><input type="checkbox" id="prizm-midi-in" checked> MIDI in</label>
-    <label class="chk" title="Route PRIZM into the loop input bus so loop channels record it (latency-compensated)"><input type="checkbox" id="prizm-to-looper"> â†’ looper</label>
+    <label class="chk" title="Route PRIZM into the loop input bus so loop channels record it (latency-compensated)"><input type="checkbox" id="prizm-to-looper"> → looper</label>
     <label>Vol</label>
     <input type="range" id="prizm-vol" min="0" max="1.2" step="0.01" value="0.72">
     <button id="prizm-fx-btn" title="Effects on the PRIZM bus (with automation)">FX</button>
-    <span class="hint">dual refraction synth Â· keys A W S E D F â€¦ + Z/X octave while open Â· n = 1 harmonic rainbow, n â‰  1 inharmonic glass</span>
+    <span class="hint">dual refraction synth · keys A W S E D F … + Z/X octave while open · n = 1 harmonic rainbow, n ≠ 1 inharmonic glass</span>
   </div>
   <div id="prizm-ui"></div>
   <div id="prizm-fx" class="inst-fx hidden"></div>
@@ -197,25 +197,25 @@ if (location.protocol === 'http:' && !/^(localhost|127\.|\[?::1)/.test(location.
 
 <main id="channels" class="hidden"></main>
 
-<button id="add-channel" class="hidden" data-mappable="global:addChannel" title="Add a new loop channel (N)">ï¼‹ ADD LOOP</button>
+<button id="add-channel" class="hidden" data-mappable="global:addChannel" title="Add a new loop channel (N)">+ ADD LOOP</button>
 
 <footer id="statusbar" class="hidden">
   <span id="status-text">Ready.</span>
-  <span class="keys">Keys: 1â€“9 = loop button Â· Shift+1â€“9 = stop Â· N = add loop Â· P = play all Â· Space = stop all Â· D = drums Â· B = 303</span>
+  <span class="keys">Keys: 1–9 = loop button · Shift+1–9 = stop · N = add loop · P = play all · Space = stop all · D = drums · B = 303</span>
 </footer>
 
-<script src="js/effects.js?v=7"></script>
-<script src="js/engine.js?v=7"></script>
-<script src="js/midi.js?v=7"></script>
-<script src="js/drums.js?v=7"></script>
-<script src="js/bass303.js?v=7"></script>
-<script src="js/prizm.js?v=7"></script>
-<script src="js/export.js?v=7"></script>
-<script src="js/import.js?v=7"></script>
-<script src="js/editor.js?v=7"></script>
-<script src="js/sequencer.js?v=7"></script>
-<script src="js/slicer.js?v=7"></script>
-<script src="js/song.js?v=7"></script>
-<script src="js/app.js?v=7"></script>
+<script src="js/effects.js?v=9"></script>
+<script src="js/engine.js?v=9"></script>
+<script src="js/midi.js?v=9"></script>
+<script src="js/drums.js?v=9"></script>
+<script src="js/bass303.js?v=9"></script>
+<script src="js/prizm.js?v=9"></script>
+<script src="js/export.js?v=9"></script>
+<script src="js/import.js?v=9"></script>
+<script src="js/editor.js?v=9"></script>
+<script src="js/sequencer.js?v=9"></script>
+<script src="js/slicer.js?v=9"></script>
+<script src="js/song.js?v=9"></script>
+<script src="js/app.js?v=9"></script>
 </body>
 </html>

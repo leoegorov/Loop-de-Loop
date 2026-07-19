@@ -120,6 +120,12 @@ body {
 .pat-slot.has { color: var(--text); }
 .pat-slot.active { background: var(--od); color: #1d1000; border-color: var(--od); font-weight: 700; }
 #bass-bank .pat-slot.active { background: var(--play); color: #04200f; border-color: var(--play); }
+.pat-add {
+  width: 1.5rem; background: none; color: var(--accent);
+  border: 1px dashed var(--edge); border-radius: 4px;
+  font-size: 0.85rem; padding: 0.15rem 0; cursor: pointer;
+}
+.pat-add:hover { border-color: var(--accent); }
 
 .drum-remove {
   flex: none; background: none; border: none; color: var(--dim);
@@ -171,7 +177,12 @@ body {
 }
 #song-panel .drum-head button:hover { border-color: var(--rec); }
 .song-play { color: var(--play) !important; }
-.song-scroll { overflow-x: auto; overflow-y: hidden; }
+.song-zoom { display: inline-flex; gap: 0.2rem; }
+.song-zoom button { width: 1.6rem; }
+.song-scroll {
+  overflow: auto; resize: vertical;
+  max-height: 70vh; min-height: 8rem;
+}
 .song-canvas { display: block; cursor: pointer; touch-action: none; }
 
 /* ---- TB-303 bass ---- */
@@ -504,9 +515,14 @@ body.learn-mode [data-mappable] { outline: 2px dashed var(--queued); outline-off
   display: flex; align-items: center; justify-content: center;
   padding: 1.5rem;
 }
-.seq-box { width: min(70rem, 100%); }
+.seq-box {
+  width: min(70rem, 100%); height: min(80vh, 640px);
+  min-width: 34rem; min-height: 22rem;
+  resize: both; overflow: hidden;
+  display: flex; flex-direction: column;
+}
 .seq-canvas {
-  width: 100%; height: 392px; display: block;
+  width: 100%; flex: 1 1 auto; min-height: 10rem; display: block;
   border: 1px solid var(--edge); border-radius: 6px;
   cursor: crosshair; background: #1f232b;
 }
