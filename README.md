@@ -168,6 +168,15 @@ too; imported loops arrive stopped and anchor themselves to the bar grid on firs
 play. A MIDI-only file becomes a silent loop of whole bars that plays its notes to
 the synth.
 
+Standalone WAVs are **tempo-synced to the master grid** on import: tempo comes from
+the file's ACID chunk (the standard loop-tempo metadata) or a `...120bpm...`
+filename; otherwise the audio is beat-detected, and if that isn't confident a
+**tap-tempo dialog** pops up for that file (or import it unsynced). With a tempo
+known, the loop is varispeed-stretched to the master BPM (half/double-time resolved
+toward the least stretch) and snapped to exact whole beats — or, if no tempo is
+locked yet, the sample's own tempo becomes the master. One-shot-flagged ACID files
+are left untouched.
+
 ### VST?
 
 Not possible in a browser — no plugin hosting exists in Web Audio. The realistic

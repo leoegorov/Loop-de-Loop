@@ -122,6 +122,180 @@
       });
   }
 
+  /* ---- tempo detection & sync ---- */
+
+  /* ACID chunk in a RIFF/WAVE: the standard carrier of loop tempo metadata. */
+  function parseWavTempo(bytes) {
+    try {
+      var dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      if (dv.getUint32(0, false) !== 0x52494646) return null;   // 'RIFF'
+      var p = 12;
+      while (p + 8 <= bytes.length) {
+        var id = String.fromCharCode(bytes[p], bytes[p + 1], bytes[p + 2], bytes[p + 3]);
+        var size = dv.getUint32(p + 4, true);
+        if (id === 'acid' && size >= 24) {
+          var flags = dv.getUint32(p + 8, true);
+          var beats = dv.getUint32(p + 8 + 12, true);
+          var bpm = dv.getFloat32(p + 8 + 20, true);
+          if (bpm > 30 && bpm < 300) {
+            return { bpm: bpm, beats: beats > 0 ? beats : null, oneshot: !!(flags & 0x01) };
+          }
+          return null;
+        }
+        p += 8 + size + (size & 1);
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  /* "loop_120bpm.wav" / "amen-140.wav" style names. */
+  function filenameBPM(name) {
+    var m = /(\d{2,3})(?:\.\d+)?\s*bpm/i.exec(name);
+    if (!m) m = /(?:^|[-_ ])(\d{2,3})(?:[-_ .]|$)/.exec(name);
+    if (!m) return null;
+    var bpm = parseFloat(m[1]);
+    return bpm >= 60 && bpm <= 199 ? bpm : null;
+  }
+
+  /* Onset-energy autocorrelation over 60–190 BPM. Returns { bpm, confidence }. */
+  function detectBPM(x, sr) {
+    var hop = 512;
+    var frames = Math.floor(x.length / hop);
+    if (frames < 32) return null;
+    var env = new Float32Array(frames);
+    for (var i = 0; i < frames; i++) {
+      var s = 0, o = i * hop;
+      for (var j = 0; j < hop; j++) { var v = x[o + j]; s += v * v; }
+      env[i] = Math.sqrt(s / hop);
+    }
+    var flux = new Float32Array(frames);
+    for (i = 1; i < frames; i++) flux[i] = Math.max(0, env[i] - env[i - 1]);
+    var hopSec = hop / sr;
+    var minLag = Math.max(2, Math.floor(60 / 190 / hopSec));
+    var maxLag = Math.min(frames - 2, Math.ceil(60 / 60 / hopSec));
+    if (maxLag <= minLag) return null;
+    var best = 0, bestLag = 0, sum = 0, cnt = 0;
+    for (var lag = minLag; lag <= maxLag; lag++) {
+      var s2 = 0;
+      for (i = 0; i + lag < frames; i++) s2 += flux[i] * flux[i + lag];
+      s2 /= (frames - lag);
+      var lag2 = lag * 2, h = 0;
+      if (lag2 < frames - 1) {
+        for (i = 0; i + lag2 < frames; i++) h += flux[i] * flux[i + lag2];
+        h /= (frames - lag2);
+      }
+      s2 += 0.5 * h;
+      sum += s2; cnt++;
+      if (s2 > best) { best = s2; bestLag = lag; }
+    }
+    var mean = sum / cnt;
+    if (!bestLag || mean <= 0) return null;
+    return { bpm: 60 / (bestLag * hopSec), confidence: best / mean };
+  }
+
+  /* Resolve half/double-time ambiguity toward the least stretch vs the master. */
+  function normalizeBPM(bpm, master) {
+    var guard = 0;
+    while (bpm < master / 1.45 && guard++ < 4) bpm *= 2;
+    while (bpm > master * 1.45 && guard++ < 8) bpm /= 2;
+    return bpm;
+  }
+
+  function resample(arr, newLen) {
+    if (newLen === arr.length) return arr;
+    var out = new Float32Array(newLen);
+    var ratio = arr.length / newLen;
+    for (var i = 0; i < newLen; i++) {
+      var pos = i * ratio;
+      var i0 = Math.floor(pos);
+      var i1 = Math.min(arr.length - 1, i0 + 1);
+      var f = pos - i0;
+      out[i] = arr[i0] * (1 - f) + arr[i1] * f;
+    }
+    return out;
+  }
+
+  /* Varispeed the sample so srcBPM lands on the master grid, snapped to whole beats. */
+  function syncToMaster(L, R, srcBPM, engine, adopt, beatsHint) {
+    var sr = engine.ctx.sampleRate;
+    var master = adopt ? srcBPM : engine.transport.bpm;
+    var bpm = adopt ? srcBPM : normalizeBPM(srcBPM, master);
+    var beats = beatsHint || Math.max(1, Math.round(L.length / sr * bpm / 60));
+    var target = Math.max(1, Math.round(beats * sr * 60 / master));
+    var ratio = target / L.length;
+    if (ratio < 0.5 || ratio > 2) return null;   // too drastic — leave the audio alone
+    return { L: resample(L, target), R: resample(R, target), len: target, beats: beats, ratio: ratio };
+  }
+
+  /* ---- tap-tempo dialog (fallback when nothing else knows the tempo) ---- */
+  var tapUI = null;
+  function tapTempo(fileName) {
+    if (!tapUI) {
+      var overlay = document.createElement('div');
+      overlay.id = 'tap-overlay';
+      overlay.className = 'hidden';
+      overlay.innerHTML =
+        '<div class="editor-box tap-box">' +
+          '<div class="editor-head">' +
+            '<span class="editor-title">TAP TEMPO</span>' +
+            '<span class="editor-info tap-file"></span>' +
+          '</div>' +
+          '<p class="tap-help">No tempo found for this file — tap the beat (4+ taps):</p>' +
+          '<button class="tap-pad">TAP</button>' +
+          '<div class="tap-readout">— BPM</div>' +
+          '<div class="editor-row editor-foot">' +
+            '<span class="ed-sel"></span>' +
+            '<button class="tap-skip">IMPORT UNSYNCED</button>' +
+            '<button class="ed-apply tap-use" disabled>USE TEMPO</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(overlay);
+      tapUI = {
+        overlay: overlay,
+        file: overlay.querySelector('.tap-file'),
+        pad: overlay.querySelector('.tap-pad'),
+        readout: overlay.querySelector('.tap-readout'),
+        use: overlay.querySelector('.tap-use'),
+        skip: overlay.querySelector('.tap-skip')
+      };
+    }
+    return new Promise(function (resolve) {
+      var taps = [];
+      var bpm = null;
+      tapUI.file.textContent = fileName;
+      tapUI.readout.textContent = '— BPM';
+      tapUI.use.disabled = true;
+      tapUI.overlay.classList.remove('hidden');
+
+      function onTap() {
+        var now = performance.now();
+        if (taps.length && now - taps[taps.length - 1] > 2500) taps = [];
+        taps.push(now);
+        if (taps.length >= 2) {
+          var sum = 0;
+          for (var i = 1; i < taps.length; i++) sum += taps[i] - taps[i - 1];
+          bpm = 60000 / (sum / (taps.length - 1));
+          tapUI.readout.textContent = bpm.toFixed(1) + ' BPM  (' + taps.length + ' taps)';
+          tapUI.use.disabled = taps.length < 4;
+        } else {
+          tapUI.readout.textContent = '… (' + taps.length + ' tap)';
+        }
+      }
+      function done(result) {
+        tapUI.pad.removeEventListener('click', onTap);
+        tapUI.use.removeEventListener('click', onUse);
+        tapUI.skip.removeEventListener('click', onSkip);
+        tapUI.overlay.classList.add('hidden');
+        resolve(result);
+      }
+      function onUse() { done(bpm); }
+      function onSkip() { done(null); }
+      tapUI.pad.addEventListener('click', onTap);
+      tapUI.use.addEventListener('click', onUse);
+      tapUI.skip.addEventListener('click', onSkip);
+    });
+  }
+
   function baseName(name) {
     var slash = name.lastIndexOf('/');
     var file = slash >= 0 ? name.slice(slash + 1) : name;
@@ -198,6 +372,47 @@
         len = audio.length;
         L = new Float32Array(audio.getChannelData(0));
         R = new Float32Array(audio.numberOfChannels > 1 ? audio.getChannelData(1) : audio.getChannelData(0));
+
+        // tempo-sync standalone wavs (our own exports are already grid-exact)
+        if (!manifest) {
+          var srcInfo = null;
+          var acid = parseWavTempo(tr.wav);
+          if (acid && !acid.oneshot) srcInfo = { bpm: acid.bpm, beats: acid.beats, source: 'wav tempo data' };
+          if (!srcInfo) {
+            var fnBpm = filenameBPM(order[o]);
+            if (fnBpm) srcInfo = { bpm: fnBpm, beats: null, source: 'filename' };
+          }
+          if (!srcInfo) {
+            var mono = new Float32Array(len);
+            for (var mi = 0; mi < len; mi++) mono[mi] = (L[mi] + R[mi]) * 0.5;
+            var det = detectBPM(mono, sr);
+            if (det && det.confidence > 1.5) srcInfo = { bpm: det.bpm, beats: null, source: 'beat detection' };
+          }
+          if (!srcInfo) {
+            var tapped = await tapTempo(order[o]);
+            if (tapped) srcInfo = { bpm: tapped, beats: null, source: 'tap tempo' };
+          }
+          if (srcInfo) {
+            var adopt = !engine.transport.tempoLocked && !bpmRestored;
+            if (adopt) {
+              engine.transport.bpm = Math.max(40, Math.min(240, Math.round(srcInfo.bpm * 10) / 10));
+              bpmRestored = true;
+              bpm = engine.transport.bpm;
+            }
+            var synced = syncToMaster(L, R, srcInfo.bpm, engine, adopt, srcInfo.beats);
+            if (synced) {
+              L = synced.L; R = synced.R; len = synced.len;
+              if (status) status('"' + order[o] + '": ' + Math.round(srcInfo.bpm) + ' BPM (' + srcInfo.source + ') → ' +
+                (adopt ? 'set as master tempo' : 'synced to ' + engine.transport.bpm + ' BPM') +
+                ', ' + synced.beats + ' beats' +
+                (Math.abs(synced.ratio - 1) > 0.005 ? ', stretched ×' + synced.ratio.toFixed(3) : '') + '.');
+            } else if (status) {
+              status('"' + order[o] + '": tempo ' + Math.round(srcInfo.bpm) + ' too far from master — imported unsynced.');
+            }
+          } else if (status) {
+            status('"' + order[o] + '" imported unsynced (no tempo).');
+          }
+        }
       } else if (midiEvents.length) {
         // MIDI-only track: silent audio loop, length = events rounded up to whole bars
         var evBpm = (parsed && parsed.bpm) || engine.transport.bpm;
@@ -229,6 +444,10 @@
 
   window.LoopImport = {
     importFiles: importFiles,
-    _internals: { unzip: unzip, parseMidi: parseMidi, midiToFrames: midiToFrames }
+    _internals: {
+      unzip: unzip, parseMidi: parseMidi, midiToFrames: midiToFrames,
+      parseWavTempo: parseWavTempo, filenameBPM: filenameBPM, detectBPM: detectBPM,
+      normalizeBPM: normalizeBPM, resample: resample, syncToMaster: syncToMaster
+    }
   };
 })();
