@@ -228,13 +228,25 @@
         var pm = Math.max(Math.abs(ed.L[i]), Math.abs(ed.R[i]));
         if (pm > pk) pk = pm;
       }
-      if (pk < 0.0001) { if (ed.status) ed.status('The loop is silent — nothing to trim.'); return; }
-      var thr = Math.max(0.003, pk * 0.02);
-      var onset = 0;
-      while (onset < ed.len && Math.abs(ed.L[onset]) < thr && Math.abs(ed.R[onset]) < thr) onset++;
-      var cutTo = Math.max(0, onset - Math.round(ed.sr * 0.005));
-      if (cutTo <= 0) { if (ed.status) ed.status('No leading silence found.'); return; }
-      if (ed.len - cutTo < MIN_LEN) { if (ed.status) ed.status('Loop would get too short.'); return; }
+      if (pk < 0.0005) { if (ed.status) ed.status('The loop is silent — nothing to trim.'); return; }
+      // onset = first sample above threshold that is backed by sustained energy
+      // (so a stray noise sample or click in the lead-in doesn't stop the scan early)
+      var thr = Math.max(0.004, pk * 0.03);
+      var confirm = Math.max(4, Math.round(ed.sr * 0.003));   // 3 ms confirm window
+      var onset = -1;
+      for (i = 0; i < ed.len; i++) {
+        if (Math.abs(ed.L[i]) > thr || Math.abs(ed.R[i]) > thr) {
+          var cnt = 0, kEnd = Math.min(ed.len, i + confirm);
+          for (var k = i; k < kEnd; k++) {
+            if (Math.abs(ed.L[k]) > thr || Math.abs(ed.R[k]) > thr) cnt++;
+          }
+          if (cnt >= confirm * 0.25) { onset = i; break; }
+        }
+      }
+      if (onset < 0) { if (ed.status) ed.status('No sustained audio found to trim to.'); return; }
+      var cutTo = Math.max(0, onset - Math.round(ed.sr * 0.005));   // keep 5 ms pre-roll
+      if (cutTo < 1) { if (ed.status) ed.status('No leading silence — audio starts at the top.'); return; }
+      if (ed.len - cutTo < MIN_LEN) { if (ed.status) ed.status('Loop would get too short to trim.'); return; }
       pushUndo();
       ed.L = ed.L.slice(cutTo);
       ed.R = ed.R.slice(cutTo);
@@ -243,7 +255,8 @@
       });
       ed.anchorDelta += cutTo;
       ed.len = ed.L.length;
-      if (ed.status) ed.status('Removed ' + (cutTo / ed.sr).toFixed(2) + 's of leading silence.');
+      ed.selA = ed.selB = null;
+      if (ed.status) ed.status('Trimmed ' + Math.round(cutTo / ed.sr * 1000) + ' ms of leading silence.');
 
     } else if (op === 'cut') {
       sel = needSel('Cut needs a selection.');

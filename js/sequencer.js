@@ -504,6 +504,14 @@
     var sr = eng.ctx.sampleRate;
     ch.setComp(eng.compFrames);   // back to live-playing compensation
     var rotate = 0;
+    // Internal synth is sample-accurately aligned already (its loop-route delay
+    // matches comp). Onset-rotating it would only chase the natural attack, shoving
+    // the audio out of sync with the MIDI and wrapping the pre-attack to the loop
+    // end. So only external takes (real MIDI->synth latency) get the alignment rotate.
+    if (ch.midiTarget === 'int') {
+      ch.node.port.postMessage({ cmd: 'rotate', frames: 0 });   // seam-fade only
+      return;
+    }
     try {
       var snap = await ch.requestSnapshot();
       if (snap.len && snap.bufL) {
@@ -524,23 +532,16 @@
             var on = 0;
             while (on < L.length && Math.abs(L[on]) < thr && Math.abs(R[on]) < thr) on++;
             var shift = on - firstOn;
-            // internal synth has no MIDI/synth latency to learn — align this take but
-            // don't fold its (attack-only) residual into the external calibration
-            var internal = ch.midiTarget === 'int';
             if (shift > 32 && shift < 0.35 * sr) {
               rotate = shift;
-              if (!internal) {
-                bounceCompMs = Math.min(500, bounceCompMs + shift / sr * 1000);
-                saveBounceComp();
-                if (statusFn) statusFn('Bounce aligned: compensated ' + Math.round(shift / sr * 1000) +
-                  ' ms MIDI/synth latency (remembered for next takes).');
-              }
+              bounceCompMs = Math.min(500, bounceCompMs + shift / sr * 1000);
+              saveBounceComp();
+              if (statusFn) statusFn('Bounce aligned: compensated ' + Math.round(shift / sr * 1000) +
+                ' ms MIDI/synth latency (remembered for next takes).');
             } else if (shift < -32 && shift > -0.05 * sr) {
               rotate = shift;
-              if (!internal) {
-                bounceCompMs = Math.max(0, bounceCompMs + shift / sr * 1000);
-                saveBounceComp();
-              }
+              bounceCompMs = Math.max(0, bounceCompMs + shift / sr * 1000);
+              saveBounceComp();
             }
           }
         }
