@@ -93,12 +93,11 @@
         '</select></label>' +
         '<button class="song-play">▶ PLAY SONG</button>' +
         '<button class="song-stop">■ STOP</button>' +
-        '<button class="song-add-auto" title="Create a new automation loop lane from an FX parameter">+ AUTO LOOP</button>' +
         '<label>Paint <select class="song-kind"><option value="audio" selected>audio</option><option value="auto">automation</option><option value="all">all</option></select></label>' +
         '<label class="chk"><input type="checkbox" class="song-loop"> loop song</label>' +
         '<button class="song-clear">CLEAR</button>' +
         '<span class="song-zoom"><button class="song-zo" title="Smaller">–</button><button class="song-zi" title="Bigger">+</button></span>' +
-        '<span class="hint">choose Paint mode to edit audio or automation clips · use + AUTO LOOP to create automation lanes</span>' +
+        '<span class="hint">choose Paint mode to edit audio or automation clips</span>' +
       '</div>' +
       '<div class="song-scroll"><canvas class="song-canvas"></canvas></div>';
     document.body.insertBefore(panel, document.getElementById('channels'));
@@ -130,7 +129,6 @@
     panel.querySelector('.song-zi').addEventListener('click', function () { zoom(4); });
     panel.querySelector('.song-play').addEventListener('click', play);
     panel.querySelector('.song-stop').addEventListener('click', stop);
-    panel.querySelector('.song-add-auto').addEventListener('click', addAutomationLoop);
     panel.querySelector('.song-clear').addEventListener('click', function () {
       tracks.forEach(function (t) { t.cells.fill(0); });
       render();
@@ -197,25 +195,6 @@
     });
     canvas.addEventListener('pointerup', function () { painting = false; });
     canvas.addEventListener('pointercancel', function () { painting = false; });
-  }
-
-  function addAutomationLoop() {
-    if (!ctx || !ctx.automationCandidates) return;
-    var list = ctx.automationCandidates();
-    if (!list.length) { ctx.status('No automatable FX parameters found. Add an effect first.'); return; }
-    var lines = ['Create automation loop lane (enter number):'];
-    for (var i = 0; i < list.length; i++) {
-      lines.push((i + 1) + '. ' + list[i].label + (list[i].active ? '  [active]' : ''));
-    }
-    var raw = window.prompt(lines.join('\n'), '1');
-    if (raw === null) return;
-    var idx = parseInt(raw, 10) - 1;
-    if (idx < 0 || idx >= list.length) { ctx.status('Invalid automation lane number.'); return; }
-    list[idx].activate();
-    buildTracks();
-    layout();
-    render();
-    ctx.status('Automation loop ready: ' + list[idx].label + '. Paint clips in automation mode.');
   }
 
   function layout() {

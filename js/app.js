@@ -8,6 +8,13 @@
   var bass = null;
   var prizm = null;
   var strips = [];           // parallel to engine.channels: { ch, root, els }
+  var autoStrips = [];       // automation loop strips
+  var autoTargetsUnsub = null;
+  var autoTargetRefreshTick = 0;
+  var autoDomTargets = {};
+  var autoDomSeq = 1;
+  var autoDomListenerOn = false;
+  var nextAutoId = 1;
   var RING_C = 2 * Math.PI * 50;
 
   var $ = function (id) { return document.getElementById(id); };
@@ -90,7 +97,7 @@
     $('comp-input').value = Math.round(engine.compFrames / engine.ctx.sampleRate * 1000);
 
     $('power-overlay').classList.add('hidden');
-    ['topbar', 'channels', 'add-channel', 'statusbar'].forEach(function (id) {
+    ['topbar', 'channels', 'add-loop-tools', 'statusbar'].forEach(function (id) {
       $(id).classList.remove('hidden');
     });
 
@@ -103,6 +110,13 @@
     setInterval(midiLoopPump, 25);
     setInterval(autoEndWatch, 100);
     setInterval(function () { drums.pump(); bass.pump(); }, 25);
+    setInterval(automationLoopPump, 30);
+    if (window.FXAutomationTargets) {
+      autoTargetsUnsub = window.FXAutomationTargets.subscribe(function (ev) {
+        onAutomationTargetMoved(ev);
+      });
+    }
+    ensureAutoDomInputListener();
   });
 
   /* ---------------- top bar ---------------- */
@@ -259,6 +273,9 @@
         $('bass-toggle').classList.remove('active');
       }
       if (prizm) prizm.allOff();
+      autoStrips.forEach(function (s) { s.root.remove(); });
+      autoStrips = [];
+      nextAutoId = 1;
       $('bpm-input').disabled = false;
       status('Reset: loops cleared, tempo unlocked, clock stopped.');
       strips.forEach(function (s) { refreshStrip(s); });
@@ -462,22 +479,21 @@
       },
       automationTracks: function () {
         var out = [];
+        autoStrips.forEach(function (s, i) {
+          out.push({
+            id: 'aloop:' + s.id,
+            label: 'LOOP ' + (i + 1) + ' - AUTOMATION',
+            loopBars: s.loopBars || 1,
+            apply: function (on) { s.songEnabled = !!on; },
+            reset: function () { s.songEnabled = null; }
+          });
+        });
         strips.forEach(function (s, i) {
           out = out.concat(s.ch.rack.songAutomationTracks('LOOP ' + (i + 1)));
         });
         out = out.concat(drums.fxRack.songAutomationTracks('DRUMS'));
         out = out.concat(bass.fxRack.songAutomationTracks('303'));
         out = out.concat(prizm.fxRack.songAutomationTracks('PRIZM'));
-        return out;
-      },
-      automationCandidates: function () {
-        var out = [];
-        strips.forEach(function (s, i) {
-          out = out.concat(s.ch.rack.songAutomationCandidates('LOOP ' + (i + 1)));
-        });
-        out = out.concat(drums.fxRack.songAutomationCandidates('DRUMS'));
-        out = out.concat(bass.fxRack.songAutomationCandidates('303'));
-        out = out.concat(prizm.fxRack.songAutomationCandidates('PRIZM'));
         return out;
       },
       setDrums: setDrumsOn,
@@ -816,6 +832,7 @@
 
   /* ---------------- channel strips ---------------- */
   $('add-channel').addEventListener('click', wrapMappable(function () { addChannel(); }));
+  $('add-auto-channel').addEventListener('click', function () { addAutomationLoop(); });
 
   function addChannel() {
     var ch = engine.addChannel();
@@ -839,7 +856,7 @@
   function renumber() {
     strips.forEach(function (s, i) {
       var n = i + 1;
-      s.els.title.textContent = 'LOOP ' + n + (n <= 9 ? '  ·  key ' + n : '');
+      s.els.title.textContent = 'LOOP ' + n + ' - AUDIO' + (n <= 9 ? '  ·  key ' + n : '');
       s.els.main.setAttribute('data-mappable', 'ch:' + n + ':main');
       s.els.stopBtn.setAttribute('data-mappable', 'ch:' + n + ':stop');
       s.els.clearBtn.setAttribute('data-mappable', 'ch:' + n + ':clear');
@@ -848,6 +865,288 @@
       s.els.armBtn.setAttribute('data-mappable', 'ch:' + n + ':arm');
       s.els.autoBtn.setAttribute('data-mappable', 'ch:' + n + ':auto');
     });
+  }
+
+  function renumberAutomation() {
+    autoStrips.forEach(function (s, i) {
+      s.els.title.textContent = 'LOOP ' + (i + 1) + ' - AUTOMATION';
+    });
+  }
+
+  function normForTarget(t, v) {
+    if (!t) return 0;
+    if (t.log) return (Math.log(v) - Math.log(t.min)) / (Math.log(t.max) - Math.log(t.min));
+    return (v - t.min) / (t.max - t.min);
+  }
+  function valForTarget(t, norm) {
+    norm = Math.max(0, Math.min(1, norm));
+    if (t.log) return Math.exp(Math.log(t.min) + norm * (Math.log(t.max) - Math.log(t.min)));
+    return t.min + norm * (t.max - t.min);
+  }
+  function currentTransportBeats() {
+    var t = engine.transport;
+    if (!t.running) return null;
+    return (t.nowFrame() - t.origin) / t.beatFrames();
+  }
+  function ensureTransportRunning() {
+    var t = engine.transport;
+    if (t.running) return;
+    var f = Math.round(t.nowFrame() + 0.02 * t.sr);
+    t.startAt(f);
+    t.tempoLocked = true;
+    $('bpm-input').disabled = true;
+    midi.startClock(f);
+  }
+  function samplePoints(pts, ph) {
+    var n = pts.length;
+    var f = ph * n;
+    var i0 = Math.floor(f) % n;
+    var i1 = (i0 + 1) % n;
+    var fr = f - Math.floor(f);
+    return pts[i0] * (1 - fr) + pts[i1] * fr;
+  }
+  function rebuildPointsFromNodes(s) {
+    var nn = s.nodes.length;
+    for (var i = 0; i < s.points.length; i++) {
+      var f = i / (s.points.length - 1) * (nn - 1);
+      var i0 = Math.floor(f), i1 = Math.min(nn - 1, i0 + 1), fr = f - i0;
+      s.points[i] = s.nodes[i0] * (1 - fr) + s.nodes[i1] * fr;
+    }
+  }
+  function rebuildNodesFromPoints(s) {
+    var nn = s.nodes.length;
+    for (var i = 0; i < nn; i++) {
+      var ph = i / (nn - 1);
+      s.nodes[i] = samplePoints(s.points, ph);
+    }
+  }
+  function ensureDomTargetId(el) {
+    if (!el.dataset.autoTargetId) {
+      el.dataset.autoTargetId = 'dom:' + (autoDomSeq++);
+    }
+    return el.dataset.autoTargetId;
+  }
+  function sliderLabel(el) {
+    if (el.id) return '[UI] ' + el.id;
+    var row = el.closest('.tb-group,.drum-head,.ch-vol,.pz-ctl,.fx-param,.editor-row,.seq-l');
+    if (row) {
+      var lb = row.querySelector('label');
+      if (lb && lb.textContent) return '[UI] ' + lb.textContent.trim();
+    }
+    return '[UI] slider';
+  }
+  function rebuildDomTargets() {
+    var next = {};
+    Array.prototype.forEach.call(document.querySelectorAll('input[type="range"]'), function (el) {
+      if (el.id === 'master-vol') return;
+      if (el.closest('.fx-rack')) return; // FX sliders are provided by FXAutomationTargets
+      var id = ensureDomTargetId(el);
+      var min = parseFloat(el.min); if (!isFinite(min)) min = 0;
+      var max = parseFloat(el.max); if (!isFinite(max) || max <= min) max = min + 1;
+      next[id] = {
+        id: id,
+        label: sliderLabel(el),
+        min: min,
+        max: max,
+        log: false,
+        get: function () { return parseFloat(el.value); },
+        apply: function (v, source) {
+          v = Math.max(min, Math.min(max, v));
+          el._autoApplying = true;
+          el.value = String(v);
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          el._autoApplying = false;
+          onAutomationTargetMoved({ targetId: id, value: v, source: source || 'automation' });
+        }
+      };
+    });
+    autoDomTargets = next;
+  }
+  function listAutomationTargets() {
+    rebuildDomTargets();
+    var out = [];
+    if (window.FXAutomationTargets) out = out.concat(window.FXAutomationTargets.list());
+    Object.keys(autoDomTargets).forEach(function (k) { out.push(autoDomTargets[k]); });
+    out.sort(function (a, b) { return a.label.localeCompare(b.label); });
+    return out;
+  }
+  function getAutomationTarget(id) {
+    rebuildDomTargets();
+    if (autoDomTargets[id]) return autoDomTargets[id];
+    if (window.FXAutomationTargets) return window.FXAutomationTargets.get(id);
+    return null;
+  }
+  function ensureAutoDomInputListener() {
+    if (autoDomListenerOn) return;
+    autoDomListenerOn = true;
+    document.addEventListener('input', function (e) {
+      var el = e.target;
+      if (!el || el.tagName !== 'INPUT' || el.type !== 'range') return;
+      if (el.id === 'master-vol') return;
+      if (el.closest('.fx-rack')) return;
+      if (el._autoApplying) return;
+      var id = ensureDomTargetId(el);
+      onAutomationTargetMoved({ targetId: id, value: parseFloat(el.value), source: 'manual' });
+    }, true);
+  }
+
+  function drawAutomationSeq(s, ph) {
+    var c = s.els.canvas;
+    var g = c.getContext('2d');
+    c.width = c.clientWidth || 200;
+    var W = c.width, H = c.height;
+    g.clearRect(0, 0, W, H);
+    g.fillStyle = 'rgba(181,140,255,0.10)';
+    g.fillRect(0, 0, W, H);
+    g.strokeStyle = 'rgba(216,220,230,0.10)';
+    for (var q = 1; q < 4; q++) {
+      var gx = q / 4 * W;
+      g.beginPath(); g.moveTo(gx, 0); g.lineTo(gx, H); g.stroke();
+    }
+    g.strokeStyle = '#b58cff';
+    g.lineWidth = 1.4;
+    g.beginPath();
+    for (var i = 0; i < s.points.length; i++) {
+      var x = i / (s.points.length - 1) * W;
+      var y = (1 - s.points[i]) * H;
+      if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+    }
+    g.stroke();
+    g.fillStyle = '#b58cff';
+    for (var k = 0; k < s.nodes.length; k++) {
+      var nx = k / (s.nodes.length - 1) * W;
+      var ny = (1 - s.nodes[k]) * H;
+      g.beginPath(); g.arc(nx, ny, 2.8, 0, 2 * Math.PI); g.fill();
+    }
+    if (ph >= 0) {
+      var px = ph * W;
+      g.strokeStyle = '#ffa229';
+      g.beginPath(); g.moveTo(px, 0); g.lineTo(px, H); g.stroke();
+    }
+  }
+  function refreshAutoTargetSelect(s) {
+    var sel = s.els.target;
+    var list = listAutomationTargets();
+    sel.innerHTML = '<option value="">select slider…</option>';
+    list.forEach(function (t) {
+      var o = document.createElement('option');
+      o.value = t.id;
+      o.textContent = t.label;
+      sel.appendChild(o);
+    });
+    if (s.targetId && getAutomationTarget(s.targetId)) sel.value = s.targetId;
+    else s.targetId = sel.value || '';
+  }
+  function refreshAutomationStrip(s) {
+    s.root.dataset.state = s.state;
+    s.els.rec.classList.toggle('active', s.state === 'recording');
+    s.els.seq.classList.add('active');
+    s.els.state.textContent = s.state === 'recording' ? 'REC' : (s.targetId ? 'PLAY' : 'NO TARGET');
+  }
+  function removeAutomationLoop(s) {
+    var i = autoStrips.indexOf(s);
+    if (i < 0) return;
+    autoStrips.splice(i, 1);
+    s.root.remove();
+    renumberAutomation();
+  }
+  function addAutomationLoop() {
+    var root = document.createElement('section');
+    root.className = 'channel auto-channel';
+    root.dataset.state = 'empty';
+    root.innerHTML =
+      '<div class="ch-head">' +
+        '<span class="ch-title"></span>' +
+        '<button class="ch-close" title="Remove this automation loop">✕</button>' +
+      '</div>' +
+      '<div class="ch-buttons">' +
+        '<button class="a-rec" title="Arm record: starts transport and captures slider movement until idle">REC</button>' +
+        '<button class="a-seq active" title="Sequence editor (always editable)">SEQ</button>' +
+      '</div>' +
+      '<div class="ch-vol"><label>Target</label><select class="a-target"></select></div>' +
+      '<canvas class="a-seq-canvas" height="64"></canvas>' +
+      '<div class="ch-vol"><label>State</label><span class="a-state">NO TARGET</span></div>';
+
+    var s = {
+      id: nextAutoId++,
+      root: root,
+      state: 'empty',
+      points: new Float32Array(128),
+      nodes: new Float32Array(16),
+      lenBeats: 4,
+      loopBars: 1,
+      targetId: '',
+      recStartBeat: 0,
+      recEvents: [],
+      recStarted: false,
+      lastMoveWall: 0,
+      songEnabled: null,
+      els: {
+        title: root.querySelector('.ch-title'),
+        rec: root.querySelector('.a-rec'),
+        seq: root.querySelector('.a-seq'),
+        target: root.querySelector('.a-target'),
+        canvas: root.querySelector('.a-seq-canvas'),
+        state: root.querySelector('.a-state')
+      }
+    };
+    s.points.fill(0.5); s.nodes.fill(0.5);
+
+    refreshAutoTargetSelect(s);
+    drawAutomationSeq(s, -1);
+    refreshAutomationStrip(s);
+
+    s.els.target.addEventListener('change', function () {
+      s.targetId = this.value;
+      if (s.targetId) s.state = 'playing';
+      refreshAutomationStrip(s);
+    });
+    s.els.rec.addEventListener('click', function () {
+      if (!s.targetId) { status('Pick a target slider first.'); return; }
+      ensureTransportRunning();
+      s.state = 'recording';
+      s.recStartBeat = currentTransportBeats() || 0;
+      s.recEvents = [];
+      s.recStarted = false;
+      s.lastMoveWall = Date.now();
+      refreshAutomationStrip(s);
+    });
+    s.els.seq.addEventListener('click', function () {
+      status('Sequence editor is always active: drag nodes in the lane to edit automation.');
+    });
+    root.querySelector('.ch-close').addEventListener('click', function () { removeAutomationLoop(s); });
+
+    // node editing
+    var dragNode = -1;
+    function pickNode(e) {
+      var rect = s.els.canvas.getBoundingClientRect();
+      var x = Math.min(Math.max(e.clientX - rect.left, 0), rect.width);
+      var idx = Math.round(x / rect.width * (s.nodes.length - 1));
+      return Math.max(0, Math.min(s.nodes.length - 1, idx));
+    }
+    function setNode(e) {
+      var rect = s.els.canvas.getBoundingClientRect();
+      var y = Math.min(Math.max(e.clientY - rect.top, 0), rect.height);
+      s.nodes[dragNode] = 1 - y / rect.height;
+      rebuildPointsFromNodes(s);
+      if (s.targetId) s.state = 'playing';
+      drawAutomationSeq(s, -1);
+      refreshAutomationStrip(s);
+    }
+    s.els.canvas.addEventListener('pointerdown', function (e) {
+      dragNode = pickNode(e);
+      s.els.canvas.setPointerCapture(e.pointerId);
+      setNode(e);
+    });
+    s.els.canvas.addEventListener('pointermove', function (e) { if (dragNode >= 0) setNode(e); });
+    s.els.canvas.addEventListener('pointerup', function () { dragNode = -1; });
+    s.els.canvas.addEventListener('pointercancel', function () { dragNode = -1; });
+
+    $('channels').appendChild(root);
+    autoStrips.push(s);
+    renumberAutomation();
+    return s;
   }
 
   function buildStrip(ch) {
@@ -1009,6 +1308,90 @@
       strip.els.ring.setAttribute('stroke-dashoffset', RING_C * (1 - ch.pos));
       strip.els.time.textContent = (ch.pos * ch.loopSec).toFixed(1) + ' / ' + ch.loopSec.toFixed(1) + 's';
     }
+  }
+
+  function onAutomationTargetMoved(ev) {
+    autoStrips.forEach(function (s) {
+      if (s.state !== 'recording') return;
+      if (!s.targetId || ev.targetId !== s.targetId) return;
+      if (ev.source !== 'manual') return;
+      var tgt = getAutomationTarget(s.targetId);
+      if (!tgt) return;
+      var beats = currentTransportBeats();
+      if (beats === null) return;
+      var rel = Math.max(0, beats - s.recStartBeat);
+      s.recEvents.push({ beat: rel, norm: normForTarget(tgt, ev.value) });
+      s.recStarted = true;
+      s.lastMoveWall = Date.now();
+    });
+  }
+
+  function finishAutomationRecord(s) {
+    if (!s.recStarted || !s.recEvents.length) {
+      s.state = s.targetId ? 'playing' : 'empty';
+      refreshAutomationStrip(s);
+      return;
+    }
+    var endBeat = s.recEvents[s.recEvents.length - 1].beat;
+    var dur = Math.max(0.5, endBeat || 1);
+    s.lenBeats = Math.max(1, Math.round(dur));
+    s.loopBars = Math.max(1, Math.round(s.lenBeats / 4));
+
+    for (var i = 0; i < s.points.length; i++) {
+      var t = i / (s.points.length - 1) * dur;
+      var j = 0;
+      while (j < s.recEvents.length - 1 && s.recEvents[j + 1].beat < t) j++;
+      var a = s.recEvents[j], b = s.recEvents[Math.min(s.recEvents.length - 1, j + 1)];
+      if (!b || b.beat === a.beat) s.points[i] = a.norm;
+      else {
+        var f = (t - a.beat) / (b.beat - a.beat);
+        s.points[i] = a.norm * (1 - f) + b.norm * f;
+      }
+    }
+    rebuildNodesFromPoints(s);
+    s.state = 'playing';
+    s.recStarted = false;
+    drawAutomationSeq(s, -1);
+    refreshAutomationStrip(s);
+  }
+
+  function automationLoopPump() {
+    if (!engine || !engine.transport) return;
+    autoTargetRefreshTick++;
+    if (autoTargetRefreshTick % 25 === 0) {
+      autoStrips.forEach(function (s) { refreshAutoTargetSelect(s); });
+    }
+    autoStrips.forEach(function (s) {
+      if (!s.targetId) return;
+      if (!getAutomationTarget(s.targetId)) {
+        s.targetId = '';
+        refreshAutoTargetSelect(s);
+        s.state = 'empty';
+        refreshAutomationStrip(s);
+      }
+    });
+
+    var beats = currentTransportBeats();
+    autoStrips.forEach(function (s) {
+      if (s.state === 'recording' && s.recStarted && Date.now() - s.lastMoveWall > 900) {
+        finishAutomationRecord(s);
+      }
+      if (beats === null || s.state !== 'playing' || !s.targetId) {
+        drawAutomationSeq(s, -1);
+        return;
+      }
+      if (s.songEnabled === false) {
+        drawAutomationSeq(s, -1);
+        return;
+      }
+      var tgt = getAutomationTarget(s.targetId);
+      if (!tgt) return;
+      var cyc = s.lenBeats || 4;
+      var ph = ((beats / cyc) % 1 + 1) % 1;
+      var norm = samplePoints(s.points, ph);
+      tgt.apply(valForTarget(tgt, norm), 'loop');
+      drawAutomationSeq(s, ph);
+    });
   }
 
   /* ---------------- beat LED ---------------- */

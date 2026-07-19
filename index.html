@@ -198,7 +198,10 @@ if (location.protocol === 'http:' && !/^(localhost|127\.|\[?::1)/.test(location.
 
 <main id="channels" class="hidden"></main>
 
-<button id="add-channel" class="hidden" data-mappable="global:addChannel" title="Add a new loop channel (N)">+ ADD LOOP</button>
+<div id="add-loop-tools" class="hidden">
+  <button id="add-channel" data-mappable="global:addChannel" title="Add a new audio loop channel (N)">+ ADD AUDIO LOOP</button>
+  <button id="add-auto-channel" title="Add a new automation loop channel">+ ADD AUTOMATION LOOP</button>
+</div>
 
 <footer id="statusbar" class="hidden">
   <span id="status-text">Ready.</span>

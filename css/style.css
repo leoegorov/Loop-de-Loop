@@ -317,6 +317,40 @@ body {
   padding: 0.7rem;
   display: flex; flex-direction: column; gap: 0.6rem;
 }
+.auto-channel {
+  border-color: #5a4b79;
+}
+.auto-channel .ch-title {
+  color: var(--queued);
+}
+.auto-channel .a-target {
+  flex: 1;
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--edge); border-radius: 4px; padding: 0.2rem;
+}
+.auto-channel .a-state {
+  color: var(--queued);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+}
+.auto-channel .a-seq-canvas {
+  width: 100%;
+  border: 1px solid var(--edge);
+  border-radius: 5px;
+  background: #14161a;
+  cursor: crosshair;
+  touch-action: none;
+}
+.auto-channel .a-rec.active {
+  background: var(--rec);
+  color: #fff;
+  border-color: var(--rec);
+}
+.auto-channel .a-seq.active {
+  background: var(--queued);
+  color: #120a20;
+  border-color: var(--queued);
+}
 .channel .ch-head { display: flex; align-items: center; justify-content: space-between; }
 .channel .ch-title { font-size: 0.85rem; color: var(--dim); letter-spacing: 0.08em; }
 .channel .ch-close {
@@ -459,17 +493,25 @@ body.learn-mode [data-mappable] { outline: 2px dashed var(--queued); outline-off
 [data-mappable].learn-armed { outline: 2px solid var(--queued) !important; animation: pulse 0.4s infinite alternate; }
 [data-mappable].mapped-badge { position: relative; }
 
-/* add channel */
-#add-channel {
+/* add channel tools */
+#add-loop-tools {
   position: fixed; right: 1.2rem; bottom: 3.2rem;
-  background: var(--accent); color: #04121f;
-  border: none; border-radius: 999px;
-  font-size: 0.95rem; font-weight: 700; letter-spacing: 0.08em;
-  padding: 0.8rem 1.4rem; cursor: pointer;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  display: flex; flex-direction: column; gap: 0.45rem;
   z-index: 20;
 }
-#add-channel:hover { filter: brightness(1.15); }
+#add-channel,
+#add-auto-channel {
+  background: var(--accent); color: #04121f;
+  border: none; border-radius: 999px;
+  font-size: 0.82rem; font-weight: 700; letter-spacing: 0.07em;
+  padding: 0.65rem 1rem; cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+}
+#add-auto-channel {
+  background: var(--queued);
+  color: #120a20;
+}
+#add-channel:hover, #add-auto-channel:hover { filter: brightness(1.12); }
 
 /* ---- waveform editor ---- */
 #slicer-overlay {

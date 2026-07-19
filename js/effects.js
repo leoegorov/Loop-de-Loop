@@ -15,6 +15,36 @@
   var SYNC_OPTS = [['off', 'free'], ['1/16', '1/16'], ['1/8', '1/8'], ['1/8.', '1/8.'],
     ['1/4', '1/4'], ['1/2', '1/2'], ['1/1', '1 bar']];
 
+  var autoTargetRegistry = {
+    map: {},
+    listeners: [],
+    register: function (t) { this.map[t.id] = t; },
+    unregister: function (id) { delete this.map[id]; },
+    list: function () {
+      var out = [];
+      Object.keys(this.map).forEach(function (k) { out.push(autoTargetRegistry.map[k]); });
+      out.sort(function (a, b) { return a.label.localeCompare(b.label); });
+      return out;
+    },
+    get: function (id) { return this.map[id] || null; },
+    subscribe: function (fn) {
+      this.listeners.push(fn);
+      var self = this;
+      return function () {
+        var i = self.listeners.indexOf(fn);
+        if (i >= 0) self.listeners.splice(i, 1);
+      };
+    },
+    emit: function (ev) {
+      this.listeners.slice().forEach(function (fn) { fn(ev); });
+    }
+  };
+  window.FXAutomationTargets = {
+    list: function () { return autoTargetRegistry.list(); },
+    get: function (id) { return autoTargetRegistry.get(id); },
+    subscribe: function (fn) { return autoTargetRegistry.subscribe(fn); }
+  };
+
   function makeReverbIR(ctx, seconds) {
     var sr = ctx.sampleRate;
     var len = Math.max(1, Math.floor(sr * seconds));
@@ -428,7 +458,7 @@
     });
     var entry = {
       key: key, uid: this._nextFxUid++, def: def, inst: inst,
-      values: values, autos: autos, card: null, outEls: {}
+      values: values, autos: autos, card: null, outEls: {}, targetIds: []
     };
     this.fx.push(entry);
     this.rebuild();
@@ -440,6 +470,7 @@
     var i = this.fx.indexOf(entry);
     if (i < 0) return;
     this.fx.splice(i, 1);
+    entry.targetIds.forEach(function (id) { autoTargetRegistry.unregister(id); });
     this.rebuild();
     entry.inst.dispose();
     if (entry.card) entry.card.remove();
@@ -457,7 +488,10 @@
   };
 
   FxRack.prototype.dispose = function () {
-    this.fx.forEach(function (e) { e.inst.dispose(); });
+    this.fx.forEach(function (e) {
+      e.targetIds.forEach(function (id) { autoTargetRegistry.unregister(id); });
+      e.inst.dispose();
+    });
     this.fx = [];
     this.input.disconnect();
     this.output.disconnect();
@@ -637,6 +671,7 @@
         entry.values[p.id] = v;
         entry.inst.set(p.id, v);
         val.textContent = fmtVal(p, v);
+        autoTargetRegistry.emit({ targetId: self.id + ':' + entry.uid + ':' + p.id, value: v, source: 'manual' });
       });
       row.appendChild(lbl); row.appendChild(input); row.appendChild(val);
 
@@ -758,6 +793,23 @@
         row.appendChild(document.createElement('span'));
         card.appendChild(row);
       }
+
+      var targetId = self.id + ':' + entry.uid + ':' + p.id;
+      autoTargetRegistry.register({
+        id: targetId,
+        label: entry.def.name + ' · ' + p.label,
+        min: p.min, max: p.max, log: !!p.log,
+        get: function () { return entry.values[p.id]; },
+        apply: function (v, source) {
+          v = Math.max(p.min, Math.min(p.max, v));
+          entry.values[p.id] = v;
+          entry.inst.set(p.id, v);
+          val.textContent = fmtVal(p, v);
+          input.value = p.log ? Math.log(v) : v;
+          autoTargetRegistry.emit({ targetId: targetId, value: v, source: source || 'automation' });
+        }
+      });
+      entry.targetIds.push(targetId);
     });
 
     entry.card = card;
