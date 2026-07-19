@@ -510,6 +510,11 @@
       window.SongArranger.toggle(songContext());
     });
   }
+  function refreshSongArranger() {
+    if (window.SongArranger && window.SongArranger.refresh) {
+      window.SongArranger.refresh(songContext());
+    }
+  }
 
   /* ---------------- PRIZM synth ---------------- */
   function wirePrizm() {
@@ -852,6 +857,7 @@
     strips.push(strip);
     renumber();
     refreshStrip(strip);
+    refreshSongArranger();
     return strip;
   }
 
@@ -863,6 +869,7 @@
     engine.removeChannel(strip.ch);
     strip.root.remove();
     renumber();
+    refreshSongArranger();
   }
 
   function renumber() {
@@ -1062,6 +1069,7 @@
     autoStrips.splice(i, 1);
     s.root.remove();
     renumberAutomation();
+    refreshSongArranger();
   }
   function addAutomationLoop() {
     var root = document.createElement('section');
@@ -1158,6 +1166,7 @@
     $('channels').appendChild(root);
     autoStrips.push(s);
     renumberAutomation();
+    refreshSongArranger();
     return s;
   }
 

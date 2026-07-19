@@ -511,9 +511,17 @@
     if (ui.panel.classList.contains('hidden')) open(context);
     else ui.panel.classList.add('hidden');
   }
+  function refresh(context) {
+    if (context) ctx = context;
+    if (!ctx || !ui || ui.panel.classList.contains('hidden')) return;
+    bars = parseInt(ui.bars.value, 10);
+    buildTracks();
+    layout();
+    render();
+  }
 
   window.SongArranger = {
-    open: open, toggle: toggle, stop: stop,
+    open: open, toggle: toggle, refresh: refresh, stop: stop,
     isPlaying: function () { return playing; }
   };
 })();
