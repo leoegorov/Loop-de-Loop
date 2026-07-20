@@ -18,6 +18,35 @@
 
   function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 
+  /* Granular pitch shift of one slice into `outL/outR` (length = source length,
+     so pitch changes but duration stays — tempo-locked). Two overlapping
+     triangle-windowed grain streams read the source at pitchRate while the output
+     position advances 1:1 — same technique as the loop-transpose worklet. */
+  function granularShift(srcL, srcR, s0, s1, pitchRate, sr, outL, outR) {
+    var n = s1 - s0;
+    var G = Math.min(2 * Math.round(sr * 0.04), n);   // ~80 ms grain window
+    if (G < 8) {                                       // slice too short: straight copy
+      for (var c = 0; c < n; c++) { outL[c] = srcL[s0 + c]; outR[c] = srcR[s0 + c]; }
+      return;
+    }
+    var half = G * 0.5;
+    for (var i = 0; i < n; i++) {
+      var aL = 0, aR = 0;
+      for (var s = 0; s < 2; s++) {
+        var ph = (i + s * half) % G;
+        var rp = (i - ph) + ph * pitchRate;
+        if (rp < 0) rp = 0; else if (rp > n - 1) rp = n - 1;
+        var w = 1 - Math.abs(2 * ph / G - 1);
+        var fl = Math.floor(rp), i0 = s0 + fl, i1 = i0 + 1;
+        if (i1 > s1 - 1) i1 = s1 - 1;
+        var fp = rp - fl;
+        aL += (srcL[i0] * (1 - fp) + srcL[i1] * fp) * w;
+        aR += (srcR[i0] * (1 - fp) + srcR[i1] * fp) * w;
+      }
+      outL[i] = aL; outR[i] = aR;
+    }
+  }
+
   function Choppah(engine) {
     var ctx = engine.ctx;
     this.engine = engine;
@@ -26,6 +55,7 @@
     this.slices = [];           // [{ start, end }] in frames
     this.activeSlice = 0;       // latched by the last control note
     this.root = SPLIT;          // pitch-zone note that plays at rate 1.0
+    this.tempoLock = false;     // pitch-shift without changing slice length
     this.gain = 1;
     this.out = ctx.createGain();
     this.out.gain.value = 0.9;
@@ -134,17 +164,39 @@
     return { slice: active, rate: Math.pow(2, (midiNote - this.root) / 12), control: false };
   };
 
+  /* Granular-shift a slice into a fresh AudioBuffer on `ctx` (tempo-locked). */
+  Choppah.prototype.shiftedSliceBuffer = function (ctx, sl, pitchRate) {
+    var buf = this.buffer, sr = buf.sampleRate;
+    var srcL = buf.getChannelData(0);
+    var srcR = buf.numberOfChannels > 1 ? buf.getChannelData(1) : srcL;
+    var n = sl.end - sl.start;
+    var outBuf = ctx.createBuffer(2, n, sr);
+    granularShift(srcL, srcR, sl.start, sl.end, pitchRate, sr, outBuf.getChannelData(0), outBuf.getChannelData(1));
+    return outBuf;
+  };
+
   /* Build one slice voice into `dest` on `ctx`; returns { src, env, endT }. */
   Choppah.prototype.spawn = function (ctx, dest, sliceIdx, rate, whenT, gateOffT, vel) {
     var sl = this.slices[sliceIdx];
     if (!sl || !this.buffer) return null;
     var sr = this.buffer.sampleRate;
-    var offset = sl.start / sr;
-    var sliceLen = (sl.end - sl.start) / sr;               // seconds of buffer content
-    var outDur = sliceLen / rate;                          // real-time length after re-pitch
     var src = ctx.createBufferSource();
-    src.buffer = this.buffer;
-    src.playbackRate.value = rate;
+    var offset, playLen, outDur;
+    if (this.tempoLock && Math.abs(rate - 1) > 1e-4) {
+      // tempo-locked: play the pitch-shifted slice at rate 1 for its natural length
+      src.buffer = this.shiftedSliceBuffer(ctx, sl, rate);
+      src.playbackRate.value = 1;
+      offset = 0;
+      playLen = src.buffer.length / sr;
+      outDur = playLen;
+    } else {
+      // classic sampler: re-pitch by playback rate (length scales with pitch)
+      src.buffer = this.buffer;
+      src.playbackRate.value = rate;
+      offset = sl.start / sr;
+      playLen = (sl.end - sl.start) / sr;
+      outDur = playLen / rate;
+    }
     var env = ctx.createGain();
     src.connect(env); env.connect(dest);
     var peak = 0.2 + 0.8 * (vel == null ? 0.8 : vel);
@@ -156,7 +208,7 @@
     env.gain.linearRampToValueAtTime(peak, whenT + EDGE);
     env.gain.setValueAtTime(peak, Math.max(whenT + EDGE, endT - rel));
     env.gain.linearRampToValueAtTime(0, endT);
-    try { src.start(whenT, offset, sliceLen); } catch (e) { return null; }
+    try { src.start(whenT, offset, playLen); } catch (e) { return null; }
     try { src.stop(endT + 0.03); } catch (e) {}
     return { src: src, env: env, endT: endT };
   };
@@ -245,7 +297,9 @@
       if (r.control) active = r.slice;
       var sl = self.slices[r.slice];
       if (!sl) return;
-      var outDur = ((sl.end - sl.start) / sr) / r.rate;
+      var natural = (sl.end - sl.start) / sr;
+      // tempo-lock keeps natural length; classic sampler scales length by 1/rate
+      var outDur = (self.tempoLock && Math.abs(r.rate - 1) > 1e-4) ? natural : natural / r.rate;
       var endT = n.offT != null && n.offT < n.onT + outDur ? Math.max(n.onT + 0.01, n.offT) : n.onT + outDur;
       if (endT > maxEnd) maxEnd = endT;
       plan.push({ slice: r.slice, rate: r.rate, onT: n.onT, offT: n.offT, vel: n.vel });
@@ -285,9 +339,10 @@
           '<option>16</option><option>24</option><option>32</option></select></label>' +
         '<button class="chop-detect" title="Slice at detected transients">DETECT</button>' +
         '<label class="seq-l">Root <select class="chop-root"></select></label>' +
+        '<label class="chk chop-lock" title="Pitch-shift the slice without changing its length (granular time-stretch)"><input type="checkbox" class="chop-lock-in"> tempo-lock pitch</label>' +
       '</div>' +
       '<canvas class="chop-canvas" height="150"></canvas>' +
-      '<div class="chop-hint">below C4 = trigger slices (rearrange) · C4 and up = re-pitch the last-triggered slice · click a slice to audition</div>';
+      '<div class="chop-hint">below C4 = trigger slices (rearrange) · C4 and up = re-pitch the last-triggered slice · tempo-lock keeps slice length · click a slice to audition</div>';
 
     var rootSel = uiRoot.querySelector('.chop-root');
     var names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -298,6 +353,7 @@
       rootSel.appendChild(o);
     }
     rootSel.addEventListener('change', function () { self.root = parseInt(this.value, 10); });
+    uiRoot.querySelector('.chop-lock-in').addEventListener('change', function () { self.tempoLock = this.checked; });
 
     var file = uiRoot.querySelector('.chop-file');
     uiRoot.querySelector('.chop-load').addEventListener('click', function () { file.click(); });
