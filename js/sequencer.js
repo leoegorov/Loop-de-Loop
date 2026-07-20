@@ -465,23 +465,19 @@
     }
     if (!ed.pattern.notes.length) { ed.status('The pattern is empty.'); return; }
     endStepRec();
+    var ch = ed.ch;
+    // Internal synth: no real-time capture at all — render the pattern offline
+    // through an identical PRIZM graph and load the result into the loop.
+    if (ch.midiTarget === 'int' && internalSynth) { renderBounce(ch); return; }
     var startF = ensureTransport();
     var lenF = Math.round(ed.pattern.bars * ed.engine.transport.barFrames());
     sess = { mode: 'rec', startF: startF, lenF: lenF, endF: startF + lenF, schedFrom: null, closeSent: false };
-    var ch = ed.ch;
-    var internal = ch.midiTarget === 'int' && internalSynth;
-    // internal target: route PRIZM into the loop input so its audio is recorded
-    if (internal) {
-      sess.wasRouted = !!internalSynth.loopDelay;
-      internalSynth.setLoopRoute(true);
-    }
     // External synth: widen the capture window by the measured MIDI/synth round trip
     // so its late-arriving audio lands right — but stop BOUNCE_SAFETY short so the
     // window always keeps a little pre-roll and never starts mid-attack (which would
     // clip the note's start and wrap it to the loop end). The post-hoc rotate then
-    // removes the residual lead-in. Internal synth has no such latency (its loop-route
-    // delay already matches comp), so don't add it.
-    var extraComp = internal ? 0 :
+    // removes the residual lead-in.
+    var extraComp =
       Math.max(0, Math.round((bounceCompMs / 1000 - BOUNCE_SAFETY) * ed.engine.ctx.sampleRate));
     ch.setComp(ed.engine.compFrames + extraComp);
     ch.sawNote = false; ch.lastMidiAbs = 0; ch.lastNoteOnAbs = 0;
@@ -491,13 +487,52 @@
     ed.status('Recording pattern into loop ' + ed.chLabel + ' (' + ed.pattern.bars + ' bars)…');
   }
 
+  /* Internal-synth bounce: render the pattern offline with PRIZM and load the
+     result straight into the loop channel. Instant (no waiting a pattern pass),
+     aligned by construction (no latency, no rotate), and note release tails wrap
+     around the loop seam. Playback is scheduled anchored to the bar grid. */
+  function renderBounce(ch) {
+    var eng = ed.engine, sr = eng.ctx.sampleRate;
+    var sf = stepFrames(eng);
+    var lenF = Math.round(ed.pattern.bars * eng.transport.barFrames());
+    var notes = [];
+    ed.pattern.notes.forEach(function (n) {
+      var on = Math.round(n.step * sf);
+      if (on >= lenF) return;
+      var dur = Math.max(1, Math.round(n.len * sf));
+      notes.push({ pitch: n.pitch, vel: n.vel / 127, onT: on / sr, offT: (on + dur) / sr });
+    });
+    var pattern = ed.pattern, label = ed.chLabel;
+    ed.status('Rendering pattern with PRIZM…');
+    internalSynth.renderPattern(notes, lenF / sr).then(function (res) {
+      if (ch.state !== 'empty' || ch.pendingAction) {
+        if (ed) ed.status('Loop ' + label + ' is no longer empty — render discarded.');
+        return;
+      }
+      ch.node.port.postMessage({ cmd: 'load', bufL: res.L.buffer, bufR: res.R.buffer },
+        [res.L.buffer, res.R.buffer]);
+      ch.midiEvents = patternEvents(eng, pattern);
+      ch.midiMute = !ui.loopOut.checked;
+      ch.seqPattern = pattern;
+      ch.loadedNeedsAnchor = true;   // align the pattern start to the bar grid
+      ch.schedule('play');
+      if (ch.onUpdate) ch.onUpdate();
+      if (ed) {
+        ed.status('Loop ' + label + ' rendered from the pattern (' +
+          (ch.midiMute ? 'MIDI output muted — audio has the part' : 'MIDI output looping') + ').');
+        render();
+      }
+    }).catch(function (err) {
+      if (ed) ed.status('Render failed: ' + (err && err.message ? err.message : err));
+    });
+  }
+
   function stopPlayback() {
     if (!sess) return;
     flushNotes();
     if (sess.mode === 'rec' && ed && ed.ch.state !== 'playing') {
       ed.ch.stop();   // abort the take
       ed.ch.setComp(ed.engine.compFrames);
-      if (ed.ch.midiTarget === 'int' && internalSynth && !sess.wasRouted) internalSynth.setLoopRoute(false);
       ed.status('Recording aborted.');
     }
     sess = null;
@@ -511,10 +546,8 @@
     var sr = eng.ctx.sampleRate;
     ch.setComp(eng.compFrames);   // back to live-playing compensation
     var rotate = 0;
-    // Internal synth is sample-accurately aligned already (its loop-route delay
-    // matches comp). Onset-rotating it would only chase the natural attack, shoving
-    // the audio out of sync with the MIDI and wrapping the pre-attack to the loop
-    // end. So only external takes (real MIDI->synth latency) get the alignment rotate.
+    // Only external takes get here (internal-synth bounces render offline and are
+    // aligned by construction); guard anyway so a stray call can't misrotate one.
     if (ch.midiTarget === 'int') {
       ch.node.port.postMessage({ cmd: 'rotate', frames: 0 });   // seam-fade only
       return;
@@ -623,7 +656,6 @@
       }
       if (ch.state === 'playing') {
         // bounce complete: pattern becomes the loop's MIDI, muted by default
-        if (ch.midiTarget === 'int' && internalSynth && !sess.wasRouted) internalSynth.setLoopRoute(false);
         ch.midiEvents = patternEvents(eng, ed.pattern);
         ch.midiMute = !ui.loopOut.checked;
         ch.seqPattern = ed.pattern;

@@ -148,17 +148,16 @@
     this.paintKey(midiNote, true);
   };
 
-  /* Fire-and-forget scheduled note for sequenced/looped internal playback.
-     Builds its own ray bank with envelope scheduled at explicit audio times,
-     independent of the live-keyboard voice map, and cleans itself up. */
-  Prizm.prototype.playScheduled = function (midiNote, vel, onT, offT) {
-    var ctx = this.engine.ctx;
+  /* Build one scheduled note (ray banks + envelope at explicit audio times) into
+     `dest` on `ctx`. Shared by live sequenced playback and offline rendering.
+     Returns { env, stopAt } — stopAt is when the release tail's oscillators end. */
+  function buildScheduledNote(ctx, dest, params, midiNote, vel, onT, offT) {
     var freq = midiHz(midiNote);
     var env = ctx.createGain();
     env.gain.value = 0;
-    env.connect(this.filter);
+    env.connect(dest);
     var oscs = [];
-    this.params.oscs.forEach(function (o) {
+    params.oscs.forEach(function (o) {
       var mix = ctx.createGain();
       mix.gain.value = o.level * 0.5;
       mix.connect(env);
@@ -178,8 +177,7 @@
         oscs.push(osc);
       }
     });
-    var p = this.params;
-    var a = timeVal(p.atk, 3), d = timeVal(p.dec, 3), s = p.sus / 100, r = timeVal(p.rel, 5);
+    var a = timeVal(params.atk, 3), d = timeVal(params.dec, 3), s = params.sus / 100, r = timeVal(params.rel, 5);
     var peak = 0.35 + 0.65 * (vel === undefined ? 0.8 : vel);
     env.gain.setValueAtTime(0, onT);
     env.gain.linearRampToValueAtTime(peak, onT + a);
@@ -188,8 +186,59 @@
     env.gain.setTargetAtTime(0, relStart, Math.max(r / 4, 0.008));
     var stopAt = relStart + r * 1.6 + 0.12;
     oscs.forEach(function (osc) { try { osc.stop(stopAt); } catch (e) {} });
-    setTimeout(function () { try { env.disconnect(); } catch (e) {} },
-      Math.max(50, (stopAt - ctx.currentTime) * 1000 + 200));
+    return { env: env, stopAt: stopAt };
+  }
+
+  /* Fire-and-forget scheduled note for sequenced/looped internal playback,
+     independent of the live-keyboard voice map; cleans itself up. */
+  Prizm.prototype.playScheduled = function (midiNote, vel, onT, offT) {
+    var ctx = this.engine.ctx;
+    var n = buildScheduledNote(ctx, this.filter, this.params, midiNote, vel, onT, offT);
+    setTimeout(function () { try { n.env.disconnect(); } catch (e) {} },
+      Math.max(50, (n.stopAt - ctx.currentTime) * 1000 + 200));
+  };
+
+  /* Render a pattern offline through an identical PRIZM chain — no real-time
+     recording needed. notes = [{ pitch, vel(0..1), onT, offT }] in seconds from
+     loop start; lenSec = exact loop length. Release tails running past the end
+     are folded back onto the loop start, so the result loops seamlessly.
+     Resolves to { L, R } Float32Arrays of exactly the loop length. */
+  Prizm.prototype.renderPattern = function (notes, lenSec) {
+    var p = this.params;
+    var sr = this.engine.ctx.sampleRate;
+    var lenFrames = Math.round(lenSec * sr);
+    // total render length: loop + the longest release tail overhang
+    var a = timeVal(p.atk, 3), r = timeVal(p.rel, 5);
+    var maxEnd = lenSec;
+    notes.forEach(function (n) {
+      var relStart = Math.max(n.offT, n.onT + a + 0.005);
+      var e = relStart + r * 1.6 + 0.12;
+      if (e > maxEnd) maxEnd = e;
+    });
+    var oc = new OfflineAudioContext(2, Math.ceil(maxEnd * sr) + 64, sr);
+    var filter = oc.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = cutoffHz(p.cutoff);
+    filter.Q.value = 0.2 + p.res / 100 * 17;
+    var comp = oc.createDynamicsCompressor();
+    comp.threshold.value = -14; comp.knee.value = 20; comp.ratio.value = 6;
+    var out = oc.createGain();
+    out.gain.value = this.out.gain.value;
+    filter.connect(comp); comp.connect(out); out.connect(oc.destination);
+    notes.forEach(function (n) {
+      buildScheduledNote(oc, filter, p, n.pitch, n.vel, n.onT, n.offT);
+    });
+    return oc.startRendering().then(function (buf) {
+      var srcL = buf.getChannelData(0), srcR = buf.getChannelData(1);
+      var L = new Float32Array(lenFrames), R = new Float32Array(lenFrames);
+      L.set(srcL.subarray(0, lenFrames));
+      R.set(srcR.subarray(0, lenFrames));
+      for (var i = lenFrames; i < srcL.length; i++) {
+        var w = i % lenFrames;   // wrap the tail overhang onto the loop start
+        L[w] += srcL[i]; R[w] += srcR[i];
+      }
+      return { L: L, R: R };
+    });
   };
 
   Prizm.prototype.noteOff = function (midiNote) {
