@@ -122,6 +122,10 @@ body {
   width: 1.5rem; background: var(--panel-2); color: var(--dim);
   border: 1px solid var(--edge); border-radius: 4px;
   font-size: 0.72rem; padding: 0.2rem 0; cursor: pointer;
+  /* single letter: kill inherited letter-spacing (adds trailing space that
+     shifts the glyph off-center) and center it properly */
+  display: inline-flex; align-items: center; justify-content: center;
+  letter-spacing: 0; line-height: 1;
 }
 .pat-slot.has { color: var(--text); }
 .pat-slot.active { background: var(--od); color: #1d1000; border-color: var(--od); font-weight: 700; }
@@ -130,6 +134,8 @@ body {
   width: 1.5rem; background: none; color: var(--accent);
   border: 1px dashed var(--edge); border-radius: 4px;
   font-size: 0.85rem; padding: 0.15rem 0; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  letter-spacing: 0; line-height: 1;
 }
 .pat-add:hover { border-color: var(--accent); }
 
