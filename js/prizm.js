@@ -202,10 +202,16 @@
      in Chrome). Measure it once per sample rate with an impulse render so
      renderPattern can trim it — otherwise every rendered note would sit that
      far behind the beat grid. */
+  /* A freshly created compressor also ramps its internal makeup gain up over the
+     first tens of ms, fading in whatever plays first. Live this never shows (the
+     node has been running since power-on); offline it must be warmed up with a
+     silent pre-roll before anything is scheduled. */
+  var COMP_WARM = 0.5;    // seconds of silent pre-roll for the compressor to settle
   var compLatency = {};   // sampleRate -> Promise<frames>
   function compressorLatency(sr) {
     if (!compLatency[sr]) {
-      var oc = new OfflineAudioContext(1, Math.round(sr * 0.1), sr);
+      var warm = Math.round(sr * COMP_WARM);
+      var oc = new OfflineAudioContext(1, warm + Math.round(sr * 0.05), sr);
       var buf = oc.createBuffer(1, 8, sr);
       buf.getChannelData(0)[0] = 1;
       var src = oc.createBufferSource();
@@ -213,10 +219,10 @@
       var comp = oc.createDynamicsCompressor();
       comp.threshold.value = -14; comp.knee.value = 20; comp.ratio.value = 6;
       src.connect(comp); comp.connect(oc.destination);
-      src.start(0);
+      src.start(warm / sr);   // probe after warm-up so the ramp can't skew it
       compLatency[sr] = oc.startRendering().then(function (out) {
         var d = out.getChannelData(0);
-        for (var i = 0; i < d.length; i++) if (Math.abs(d[i]) > 1e-4) return i;
+        for (var i = warm; i < d.length; i++) if (Math.abs(d[i]) > 1e-4) return i - warm;
         return 0;
       });
     }
@@ -243,7 +249,9 @@
       if (e > maxEnd) maxEnd = e;
     });
     return compressorLatency(sr).then(function (lat) {
-      var oc = new OfflineAudioContext(2, Math.ceil(maxEnd * sr) + lat + 64, sr);
+      // silent pre-roll: let the fresh compressor's makeup gain settle so the
+      // first note isn't faded in by its warm-up ramp
+      var oc = new OfflineAudioContext(2, Math.round(COMP_WARM * sr) + Math.ceil(maxEnd * sr) + lat + 64, sr);
       var filter = oc.createBiquadFilter();
       filter.type = 'lowpass';
       filter.frequency.value = cutoffHz(p.cutoff);
@@ -254,18 +262,19 @@
       out.gain.value = outGain;
       filter.connect(comp); comp.connect(out); out.connect(oc.destination);
       notes.forEach(function (n) {
-        buildScheduledNote(oc, filter, p, n.pitch, n.vel, n.onT, n.offT);
+        buildScheduledNote(oc, filter, p, n.pitch, n.vel, COMP_WARM + n.onT, COMP_WARM + n.offT);
       });
       return oc.startRendering();
     }).then(function (buf) {
       return compLatency[sr].then(function (lat) {
         var srcL = buf.getChannelData(0), srcR = buf.getChannelData(1);
         var L = new Float32Array(lenFrames), R = new Float32Array(lenFrames);
-        // read past the compressor's lookahead so onsets sit on the grid
-        L.set(srcL.subarray(lat, lat + lenFrames));
-        R.set(srcR.subarray(lat, lat + lenFrames));
-        for (var i = lat + lenFrames; i < srcL.length; i++) {
-          var w = (i - lat) % lenFrames;   // wrap the tail overhang onto the loop start
+        // skip the warm-up pre-roll and the compressor's lookahead delay
+        var skip = Math.round(COMP_WARM * sr) + lat;
+        L.set(srcL.subarray(skip, skip + lenFrames));
+        R.set(srcR.subarray(skip, skip + lenFrames));
+        for (var i = skip + lenFrames; i < srcL.length; i++) {
+          var w = (i - skip) % lenFrames;   // wrap the tail overhang onto the loop start
           L[w] += srcL[i]; R[w] += srcR[i];
         }
         return { L: L, R: R };
