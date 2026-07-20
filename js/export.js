@@ -188,66 +188,6 @@
     return bytes;
   }
 
-  function writeVarLen(value) {
-    var buffer = value & 0x7F;
-    while ((value >>>= 7)) {
-      buffer <<= 8;
-      buffer |= ((value & 0x7F) | 0x80);
-    }
-    var out = [];
-    while (true) {
-      out.push(buffer & 0xFF);
-      if (buffer & 0x80) buffer >>>= 8;
-      else break;
-    }
-    return out;
-  }
-
-  function pushBytes(list, bytes) {
-    for (var i = 0; i < bytes.length; i++) list.push(bytes[i]);
-  }
-
-  function encodeMidiFile(events, bpm, loopFrames, sampleRate) {
-    var ppq = 480;
-    var tempo = Math.max(1, Math.round(60000000 / Math.max(1, bpm)));
-    var track = [];
-    var absoluteTick = 0;
-    var ordered = [];
-    var i;
-
-    track.push(0x00, 0xFF, 0x51, 0x03, (tempo >>> 16) & 0xFF, (tempo >>> 8) & 0xFF, tempo & 0xFF);
-    for (i = 0; i < events.length; i++) {
-      var ev = events[i];
-      var tick = Math.max(0, Math.round((ev.off / sampleRate) * (bpm / 60) * ppq));
-      ordered.push({ tick: tick, data: ev.data });
-    }
-    ordered.sort(function (a, b) { return a.tick - b.tick; });
-
-    for (i = 0; i < ordered.length; i++) {
-      var cur = ordered[i];
-      var delta = cur.tick - absoluteTick;
-      absoluteTick = cur.tick;
-      pushBytes(track, writeVarLen(delta));
-      track.push(cur.data[0] & 0xFF, cur.data[1] & 0xFF, cur.data[2] & 0x7F);
-    }
-
-    pushBytes(track, [0x00, 0xFF, 0x2F, 0x00]);
-
-    var trackBytes = new Uint8Array(track);
-    var bytes = new Uint8Array(22 + trackBytes.length);
-    var view = new DataView(bytes.buffer);
-
-    bytes.set([0x4D, 0x54, 0x68, 0x64], 0);
-    view.setUint32(4, 6, false);
-    view.setUint16(8, 0, false);
-    view.setUint16(10, 1, false);
-    view.setUint16(12, ppq, false);
-    bytes.set([0x4D, 0x54, 0x72, 0x6B], 14);
-    view.setUint32(18, trackBytes.length, false);
-    bytes.set(trackBytes, 22);
-    return bytes;
-  }
-
   function buildZip(files) {
     var now = dosDateTime(new Date());
     var localParts = [];
@@ -314,7 +254,7 @@
     }
 
     var channelInfos = strips.map(function (strip) {
-      return { strip: strip, midiEvents: strip.ch.midiEvents.slice() };
+      return { strip: strip };
     });
 
     var snapshots = await Promise.all(channelInfos.map(function (info) {
@@ -338,17 +278,13 @@
       var right = new Float32Array(snapshot.bufR);
       var stemBase = 'track-' + pad2(trackNo);
       var wavName = stemBase + '.wav';
-      var midiName = stemBase + '.mid';
       files.push({ name: wavName, data: await wavBytes(left, right, sampleRate) });
-      files.push({ name: midiName, data: encodeMidiFile(entry.info.midiEvents, bpm, snapshot.len, sampleRate) });
       tracks.push({
         track: trackNo,
         sourceState: snapshot.state,
         frames: snapshot.len,
         seconds: Math.round((snapshot.len / sampleRate) * 1000) / 1000,
-        midiEvents: entry.info.midiEvents.length,
-        audioFile: wavName,
-        midiFile: midiName
+        audioFile: wavName
       });
     }
 
@@ -375,6 +311,6 @@
     exportLoops: exportLoops,
     recordTap: recordTap,
     exportStems: exportStems,
-    _internals: { encodeWavStereo: encodeWavStereo, encodeMidiFile: encodeMidiFile, buildZip: buildZip, wavBytes: wavBytes }
+    _internals: { encodeWavStereo: encodeWavStereo, buildZip: buildZip, wavBytes: wavBytes }
   };
 })();
