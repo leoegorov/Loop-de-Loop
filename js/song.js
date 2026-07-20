@@ -19,6 +19,7 @@
   var startF = 0;
   var loopSong = false;
   var passTimer = null;
+  var oneShotTimers = [];   // per-block retrigger timers for one-shot loops
   var rafOn = false;
   var autoTimer = null;
   var AUTO_MS = 40;
@@ -413,17 +414,44 @@
     autoTimer = setInterval(autoTick, AUTO_MS);
   }
 
+  /* Start bars of each contiguous run of active cells (block starts). */
+  function blockStarts(cells) {
+    var out = [], inRun = false;
+    for (var b = 0; b < bars; b++) {
+      if (cells[b] && !inRun) { out.push(b); inRun = true; }
+      else if (!cells[b]) inRun = false;
+    }
+    return out;
+  }
+
+  /* Send a one-shot retrigger to the worklet ~100 ms before its target frame, so
+     each block start replays the loop once without relying on the single pending
+     slot (multiple blocks per pass). */
+  function scheduleOneShot(ch, frame) {
+    var sr = ctx.engine.ctx.sampleRate;
+    var wait = (frame / sr - ctx.engine.ctx.currentTime - 0.1) * 1000;
+    var tid = setTimeout(function () { if (playing) ch.songOneShotAt(frame); }, Math.max(0, wait));
+    oneShotTimers.push(tid);
+  }
+
   /* Schedule the loop-audio gates for one pass; re-armed each pass while looping. */
   function armLoopPass(sf) {
+    var bf = ctx.engine.transport.barFrames();
+    oneShotTimers.forEach(clearTimeout);
+    oneShotTimers = [];
     tracks.forEach(function (t) {
-      if (t.kind === 'loop' && hasCells(t) && t.ch) {
+      if (t.kind !== 'loop' || !hasCells(t) || !t.ch) return;
+      if (t.ch.oneShot) {
+        // play once at each contiguous block start instead of looping continuously
+        scheduleGate(t.gate, t.cells, sf);
+        blockStarts(t.cells).forEach(function (b) { scheduleOneShot(t.ch, sf + b * bf); });
+      } else {
         t.ch.songPlayAt(sf);
         scheduleGate(t.gate, t.cells, sf);
       }
     });
     refreshAutomation(sf, sf);
     var sr = ctx.engine.ctx.sampleRate;
-    var bf = ctx.engine.transport.barFrames();
     var msToEnd = ((sf + bars * bf) / sr - ctx.engine.ctx.currentTime) * 1000;
     clearTimeout(passTimer);
     passTimer = setTimeout(function () {
@@ -468,6 +496,8 @@
   function stop() {
     playing = false;
     clearTimeout(passTimer);
+    oneShotTimers.forEach(clearTimeout);
+    oneShotTimers = [];
     var now = ctx.engine.ctx.currentTime;
     // release loop gates back to audible; stop loops and instruments
     tracks.forEach(function (t) {

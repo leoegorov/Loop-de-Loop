@@ -450,6 +450,8 @@ body {
 .midi-row { align-items: center; }
 .b-arm, .b-auto { max-width: 5rem; }
 .b-auto.active { background: var(--accent); color: #04121f; border-color: var(--accent); }
+.b-chop { color: var(--od); }
+.b-oneshot.active { background: var(--od); color: #1d1000; border-color: var(--od); font-weight: 700; }
 .b-arm.active {
   background: var(--rec); color: #fff; border-color: var(--rec);
   animation: pulse 0.6s ease-in-out infinite alternate;

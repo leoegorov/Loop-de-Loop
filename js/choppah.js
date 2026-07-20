@@ -135,6 +135,24 @@
     });
   };
 
+  /* Load raw loop audio (Float32 L/R) straight in as the sample, e.g. from a
+     recorded loop channel — no decode needed. */
+  Choppah.prototype.loadBuffers = function (L, R, sr, name) {
+    var buf = this.engine.ctx.createBuffer(2, L.length, sr || this.engine.ctx.sampleRate);
+    buf.getChannelData(0).set(L);
+    buf.getChannelData(1).set(R && R.length === L.length ? R : L);
+    this.buffer = buf;
+    this.sampleName = name || 'loop';
+    this.sliceEqual(8);
+    if (this.uiRoot) {
+      var nm = this.uiRoot.querySelector('.chop-name');
+      if (nm) nm.textContent = this.sampleName + ' · ' + buf.duration.toFixed(2) + 's';
+    }
+    this.drawSel();
+    this.buildKeyboard();
+    return buf;
+  };
+
   /* ---------------- interface parity ---------------- */
   Choppah.prototype.isOpen = function () {
     return !!(this.panel && !this.panel.classList.contains('hidden'));

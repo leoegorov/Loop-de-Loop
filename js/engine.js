@@ -21,6 +21,7 @@
     '    this.pending = null;',
     '    this.anchor = 0;',
     '    this.stopPos = 0;   // frozen playhead position while stopped (pause/resume)',
+    '    this.oneShot = false;   // play once and stop instead of looping',
     '    this.len = 0;',
     '    this.bufL = null; this.bufR = null;',
     '    this.undoL = null; this.undoR = null;',
@@ -102,6 +103,8 @@
     '      }',
     '    } else if (m.cmd === "comp") {',
     '      this.comp = m.value;',
+    '    } else if (m.cmd === "oneshot") {',
+    '      this.oneShot = !!m.value;',
     '    } else if (m.cmd === "transpose") {',
     '      this.pitchRate = Math.pow(2, (m.value || 0) / 12);',
     '    }',
@@ -176,6 +179,9 @@
     '        else this.anchor = frame - this.stopPos;',
     '        this.state = "playing";',
     '      }',
+    '    } else if (a === "retrigger") {',
+    '      // song one-shot: (re)start from the top at this frame regardless of state',
+    '      if (this.bufL) { this.anchor = opt.anchor || frame; this.stopPos = 0; this.state = "playing"; }',
     '    } else if (a === "stop") {',
     '      if (this.state === "recording") {',
     '        this.state = "empty"; this.recL = this.recR = null; this.recLen = 0;',
@@ -251,7 +257,7 @@
     '      var b = inR ? inR[j] : a;',
     '      if (playing) {',
     '        var pos = frame - this.anchor;',
-    '        if (pos >= 0) {',
+    '        if (pos >= 0 && !(this.oneShot && pos >= this.len)) {',
     '          pos = pos % this.len;',
     '          if (this.pitchRate === 1) {',
     '            outL[j] = this.bufL[pos]; outR[j] = this.bufR[pos];',
@@ -322,6 +328,12 @@
     '      }',
     '      this.run(inL, inR, outL, outR, i, end, blockStart);',
     '      i = end;',
+    '    }',
+    '    // one-shot: after a full pass has played, stop (reset to the top for replay)',
+    '    if (this.oneShot && this.state === "playing" && this.len > 0 &&',
+    '        currentFrame + N - this.anchor >= this.len) {',
+    '      this.state = "stopped"; this.stopPos = 0;',
+    '      this.sendState();',
     '    }',
     '    this.blockCount++;',
     '    if (this.blockCount % 10 === 0) {',
@@ -462,6 +474,7 @@
     this.midiMute = false;      // suppress looped MIDI output (e.g. after a sequencer bounce)
     this.midiTarget = 'ext';    // 'ext' = external MIDI port, 'int' = internal PRIZM synth
     this.transpose = 0;         // semitones; audio shifts granularly, MIDI notes shift with it
+    this.oneShot = false;       // play once and stop instead of looping (live + song)
     this.seqPattern = null;     // sequencer pattern for this channel { bars, chan, notes }
     this.pendingMidi = [];      // { f: absolute frame, data } captured while rec/overdub
     this.midiUndo = null;       // snapshot for one-level overdub undo
@@ -706,6 +719,17 @@
     this.transpose = st;
     this.node.port.postMessage({ cmd: 'transpose', value: st });
     return st;
+  };
+  LoopChannel.prototype.setOneShot = function (on) {
+    this.oneShot = !!on;
+    this.node.port.postMessage({ cmd: 'oneshot', value: this.oneShot });
+  };
+  /* Song one-shot: (re)start the loop from the top at an explicit frame, regardless
+     of its current state (used at each contiguous block start in the arrangement). */
+  LoopChannel.prototype.songOneShotAt = function (frame) {
+    this.pendingAction = 'play';
+    this.node.port.postMessage({ cmd: 'schedule', action: 'retrigger', frame: frame, anchor: frame });
+    if (this.onUpdate) this.onUpdate();
   };
 
   LoopChannel.prototype.destroy = function () {

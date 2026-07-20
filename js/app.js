@@ -577,6 +577,22 @@
     });
   }
 
+  /* Grab a recorded loop's audio and load it into CHOPPAH as a sample to chop. */
+  function sendToChoppah(ch, n) {
+    if (!choppah) { status('CHOPPAH unavailable.'); return; }
+    ch.requestSnapshot().then(function (snap) {
+      if (!snap.len || !snap.bufL) { status('Loop ' + n + ' has no audio to chop yet.'); return; }
+      choppah.loadBuffers(new Float32Array(snap.bufL), new Float32Array(snap.bufR),
+        engine.ctx.sampleRate, 'loop ' + n);
+      $('choppah-panel').classList.remove('hidden');
+      if (choppah.selCanvas) {
+        choppah.selCanvas.width = choppah.selCanvas.clientWidth || 900;
+        choppah.drawSel();
+      }
+      status('Loop ' + n + ' sent to CHOPPAH (' + choppah.slices.length + ' slices) — chop it in the CHOP panel.');
+    });
+  }
+
   /* ---------------- stop all / play all (loops + 808 + 303) ---------------- */
   function stopEverything() {
     if (window.SongArranger && window.SongArranger.isPlaying()) window.SongArranger.stop();
@@ -1254,6 +1270,10 @@
         '<button class="b-seq" title="Open the MIDI sequencer — compose a pattern, ⏺ records it into this loop">SEQ</button>' +
         '<button class="b-slice" disabled title="Chop this loop on the beat grid: rearrange, repeat, reverse or silence slices (plays through the FX chain)">SLICE</button>' +
       '</div>' +
+      '<div class="ch-buttons">' +
+        '<button class="b-chop" disabled title="Send this loop\'s audio to CHOPPAH as a sample to chop, rearrange and re-pitch">→ CHOP</button>' +
+        '<button class="b-oneshot" title="One-shot: play the loop once and stop instead of looping (applies live and in the song arranger)">1-SHOT</button>' +
+      '</div>' +
       '<div class="ch-buttons midi-row">' +
         '<button class="b-arm" title="Start recording on the first incoming MIDI note">ARM</button>' +
         '<button class="b-auto" title="Auto-close the loop when MIDI input goes silent (trailing silence is trimmed)">AUTO</button>' +
@@ -1279,6 +1299,8 @@
       editBtn: root.querySelector('.b-edit'),
       seqBtn: root.querySelector('.b-seq'),
       sliceBtn: root.querySelector('.b-slice'),
+      chopBtn: root.querySelector('.b-chop'),
+      oneshotBtn: root.querySelector('.b-oneshot'),
       armBtn: root.querySelector('.b-arm'),
       autoBtn: root.querySelector('.b-auto'),
       midiChk: root.querySelector('.midi-rec input'),
@@ -1304,6 +1326,15 @@
     els.sliceBtn.addEventListener('click', function () {
       window.BeatSlicer.open(engine, ch, strips.indexOf(strip) + 1, status);
     });
+    els.chopBtn.addEventListener('click', function () {
+      sendToChoppah(ch, strips.indexOf(strip) + 1);
+    });
+    els.oneshotBtn.addEventListener('click', wrapMappable(function () {
+      ch.setOneShot(!ch.oneShot);
+      refreshStrip(strip);
+      status('Loop ' + (strips.indexOf(strip) + 1) + (ch.oneShot ?
+        ' set to one-shot (plays once, then stops).' : ' loops continuously.'));
+    }));
     els.vol.addEventListener('input', function () { ch.setVolume(parseFloat(this.value)); });
     els.vol.addEventListener('click', wrapMappable(function () {}));
     els.pitch.addEventListener('change', function () {
@@ -1359,6 +1390,8 @@
     strip.els.undoBtn.disabled = !ch.hasUndo;
     strip.els.editBtn.disabled = !(ch.state === 'playing' || ch.state === 'stopped');
     strip.els.sliceBtn.disabled = strip.els.editBtn.disabled;
+    strip.els.chopBtn.disabled = strip.els.editBtn.disabled;
+    strip.els.oneshotBtn.classList.toggle('active', ch.oneShot);
     strip.els.armBtn.classList.toggle('active', ch.armed);
     strip.els.autoBtn.classList.toggle('active', ch.autoEnd);
     strip.els.midiCount.textContent = ch.midiEvents.length ? '(' + ch.midiEvents.length + ')' : '';
