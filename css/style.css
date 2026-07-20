@@ -189,6 +189,8 @@ body {
 }
 #song-panel .drum-head button:hover { border-color: var(--rec); }
 .song-play { color: var(--play) !important; }
+.song-render { color: var(--accent) !important; }
+.song-render:disabled { color: var(--rec) !important; opacity: 1; }
 .song-zoom { display: inline-flex; gap: 0.2rem; }
 .song-zoom button { width: 1.6rem; }
 .song-scroll {

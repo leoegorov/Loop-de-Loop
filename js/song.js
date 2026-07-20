@@ -94,6 +94,7 @@
         '</select></label>' +
         '<button class="song-play">▶ PLAY SONG</button>' +
         '<button class="song-stop">■ STOP</button>' +
+        '<button class="song-render" title="Play the arrangement once and export every track as a WAV stem (multitrack zip)">⤓ RENDER SONG</button>' +
         '<label>Paint <select class="song-kind"><option value="audio" selected>audio</option><option value="auto">automation</option><option value="all">all</option></select></label>' +
         '<label class="chk"><input type="checkbox" class="song-loop"> loop song</label>' +
         '<button class="song-clear">CLEAR</button>' +
@@ -110,7 +111,8 @@
       g: canvas.getContext('2d'),
       bars: panel.querySelector('.song-bars'),
       loop: panel.querySelector('.song-loop'),
-      kind: panel.querySelector('.song-kind')
+      kind: panel.querySelector('.song-kind'),
+      renderBtn: panel.querySelector('.song-render')
     };
 
     ui.bars.addEventListener('change', function () {
@@ -130,6 +132,7 @@
     panel.querySelector('.song-zi').addEventListener('click', function () { zoom(4); });
     panel.querySelector('.song-play').addEventListener('click', play);
     panel.querySelector('.song-stop').addEventListener('click', stop);
+    ui.renderBtn.addEventListener('click', renderSong);
     panel.querySelector('.song-clear').addEventListener('click', function () {
       tracks.forEach(function (t) { t.cells.fill(0); });
       render();
@@ -523,6 +526,86 @@
     refreshAutomation(ctx.engine.transport.nowFrame(), startF);
     render();
     requestAnimationFrame(frame);
+  }
+
+  /* ---------------- render + export (multitrack) ----------------
+     Play the arrangement once in real time, tapping each stem's output (arranged
+     loops post-gate, the drum bus, the 303 bus), then export every stem as WAV in
+     a zip. Real-time because the whole live graph (FX, automation, one-shots,
+     internal-synth loops) plays through exactly as arranged. */
+  var rendering = false;
+  function fileSafe(s) { return s.replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '') || 'track'; }
+  function firstNonSilent(L, R) {
+    for (var i = 0; i < L.length; i++) if (Math.abs(L[i]) > 1e-4 || Math.abs(R[i]) > 1e-4) return i;
+    return L.length;
+  }
+
+  function renderSong() {
+    if (!ctx || !ctx.engine.ctx) { if (ctx) ctx.status('Power on first.'); return; }
+    if (rendering) { ctx.status('Already rendering the song.'); return; }
+    if (playing) stop();
+    if (!window.LoopExport || !window.LoopExport.recordTap) { ctx.status('Export unavailable.'); return; }
+
+    var engine = ctx.engine, actx = engine.ctx, sr = actx.sampleRate;
+    var bf = engine.transport.barFrames();
+
+    // one stem per arranged track: loops (post arrangement gate), drum bus, 303 bus
+    var defs = [], seenDrums = false, seenBass = false, usedNames = {};
+    function uniq(n) { var b = n, k = 2; while (usedNames[n]) n = b + '-' + (k++); usedNames[n] = 1; return n; }
+    tracks.forEach(function (t) {
+      if (!hasCells(t)) return;
+      if (t.kind === 'loop' && t.ch) defs.push({ name: uniq(fileSafe(t.label)), node: t.ch.songGain });
+      else if (t.kind === 'drums' && !seenDrums) { seenDrums = true; defs.push({ name: uniq('DRUMS'), node: ctx.drumsGate }); }
+      else if (t.kind === 'bass' && !seenBass) { seenBass = true; defs.push({ name: uniq('303'), node: ctx.bassGate }); }
+    });
+    if (!defs.length) { ctx.status('Nothing arranged to render — paint some clips first.'); return; }
+
+    rendering = true;
+    if (ui.renderBtn) { ui.renderBtn.disabled = true; ui.renderBtn.textContent = '● RENDERING…'; }
+    var wasLoop = loopSong; loopSong = false;   // render exactly one pass
+    var totalSec = bars * bf / sr, tail = 0.4;
+    ctx.status('Rendering song in real time — ' + bars + ' bars (~' + Math.ceil(totalSec) + 's). Plays through once.');
+
+    Promise.all(defs.map(function (d) {
+      return window.LoopExport.recordTap(actx, d.node).then(function (rec) { d.rec = rec; return d; });
+    })).then(function () {
+      play();   // schedules the whole arrangement from startF
+      setTimeout(function () {
+        if (playing) stop();
+        Promise.all(defs.map(function (d) {
+          return d.rec.stop().then(function (buf) { d.L = buf.L; d.R = buf.R; });
+        })).then(function () {
+          // trim the common leading silence (shared pre-roll) so stems start at the
+          // song downbeat while staying sample-aligned with each other
+          var lead = Infinity;
+          defs.forEach(function (d) { lead = Math.min(lead, firstNonSilent(d.L, d.R)); });
+          if (!isFinite(lead)) lead = 0;
+          var wantFrames = Math.round(totalSec * sr) + Math.round(tail * sr);
+          var stems = defs.map(function (d) {
+            var L = d.L.subarray(lead, lead + wantFrames), R = d.R.subarray(lead, lead + wantFrames);
+            return { name: d.name, L: new Float32Array(L), R: new Float32Array(R) };
+          });
+          loopSong = wasLoop; rendering = false;
+          if (ui.renderBtn) { ui.renderBtn.disabled = false; ui.renderBtn.textContent = '⤓ RENDER SONG'; }
+          window.LoopExport.exportStems(stems, {
+            sampleRate: sr, prefix: 'looping-song',
+            manifest: {
+              renderedAt: new Date().toISOString(), bpm: engine.transport.bpm, bars: bars,
+              sampleRate: sr, multitrack: true,
+              stems: stems.map(function (s) {
+                return { file: s.name + '.wav', frames: s.L.length, seconds: Math.round(s.L.length / sr * 1000) / 1000 };
+              })
+            }
+          }).then(function () {
+            ctx.status('Song rendered — ' + stems.length + ' stems exported as multitrack zip.');
+          });
+        });
+      }, Math.round((totalSec + tail) * 1000) + 300);
+    }).catch(function (err) {
+      rendering = false; loopSong = wasLoop;
+      if (ui.renderBtn) { ui.renderBtn.disabled = false; ui.renderBtn.textContent = '⤓ RENDER SONG'; }
+      ctx.status('Render failed: ' + (err && err.message ? err.message : err));
+    });
   }
 
   /* ---------------- entry ---------------- */

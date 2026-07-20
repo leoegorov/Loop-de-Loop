@@ -27,6 +27,86 @@
     }, 0);
   }
 
+  /* ---------------- real-time stem capture ----------------
+     A tiny recorder AudioWorklet taps a node's output into a PCM buffer. Used to
+     render the arranged song per-track by capturing the live graph while it plays. */
+  var RECORDER_SRC = [
+    'class Rec extends AudioWorkletProcessor {',
+    '  constructor() { super(); this.L = []; this.R = []; this.on = true; var s = this;',
+    '    this.port.onmessage = function (e) { if (e.data && e.data.cmd === "stop") { s.on = false; s.dump(); } };',
+    '  }',
+    '  dump() {',
+    '    var n = 0, i; for (i = 0; i < this.L.length; i++) n += this.L[i].length;',
+    '    var L = new Float32Array(n), R = new Float32Array(n), o = 0;',
+    '    for (i = 0; i < this.L.length; i++) { L.set(this.L[i], o); R.set(this.R[i], o); o += this.L[i].length; }',
+    '    this.L = this.R = null;',
+    '    this.port.postMessage({ l: L.buffer, r: R.buffer }, [L.buffer, R.buffer]);',
+    '  }',
+    '  process(inputs) {',
+    '    if (this.on) { var inp = inputs[0]; if (inp && inp[0]) { this.L.push(inp[0].slice()); this.R.push((inp[1] || inp[0]).slice()); } }',
+    '    return true;',
+    '  }',
+    '}',
+    'registerProcessor("looping-recorder", Rec);'
+  ].join('\n');
+
+  var recorderModule = null;
+  function ensureRecorder(ctx) {
+    if (!recorderModule) {
+      var url = URL.createObjectURL(new Blob([RECORDER_SRC], { type: 'application/javascript' }));
+      recorderModule = ctx.audioWorklet.addModule(url);
+    }
+    return recorderModule;
+  }
+
+  /* Tap `source`'s output; returns a promise of { stop() -> Promise<{L,R}> }. */
+  function recordTap(ctx, source) {
+    return ensureRecorder(ctx).then(function () {
+      var node = new AudioWorkletNode(ctx, 'looping-recorder',
+        { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
+      var sink = ctx.createGain(); sink.gain.value = 0;   // keep the node processing, silently
+      source.connect(node); node.connect(sink); sink.connect(ctx.destination);
+      return {
+        stop: function () {
+          return new Promise(function (resolve) {
+            node.port.onmessage = function (e) {
+              try { source.disconnect(node); } catch (x) {}
+              try { node.disconnect(); } catch (x) {}
+              try { sink.disconnect(); } catch (x) {}
+              resolve({ L: new Float32Array(e.data.l), R: new Float32Array(e.data.r) });
+            };
+            node.port.postMessage({ cmd: 'stop' });
+          });
+        }
+      };
+    });
+  }
+
+  /* Encode L/R to a 16-bit WAV using the audiojs @audio/encode-wav encoder when
+     present (falls back to the built-in writer). */
+  async function wavBytes(L, R, sampleRate) {
+    if (typeof window !== 'undefined' && window.EncodeWav) {
+      var enc = await window.EncodeWav({ sampleRate: sampleRate, bitDepth: 16 });
+      enc.encode([L, R]);
+      return enc.flush();
+    }
+    return encodeWavStereo(L, R, sampleRate);
+  }
+
+  /* Encode a set of stems ([{ name, L, R }]) to WAV and download as a multitrack
+     zip (+ manifest). */
+  async function exportStems(stems, opts) {
+    var files = [];
+    for (var i = 0; i < stems.length; i++) {
+      files.push({ name: stems[i].name + '.wav', data: await wavBytes(stems[i].L, stems[i].R, opts.sampleRate) });
+    }
+    if (opts.manifest) {
+      files.push({ name: 'manifest.json', data: textEncoder.encode(JSON.stringify(opts.manifest, null, 2)) });
+    }
+    downloadBlob(buildZip(files), (opts.prefix || 'looping') + '-' + nowStamp() + '.zip');
+    return files.length;
+  }
+
   function crc32(bytes) {
     if (!crcTable) {
       crcTable = new Uint32Array(256);
@@ -249,16 +329,17 @@
     var tracks = [];
     var trackNo = 0;
 
-    snapshots.forEach(function (entry) {
+    for (var si = 0; si < snapshots.length; si++) {
+      var entry = snapshots[si];
       var snapshot = entry.snapshot;
-      if (!snapshot || !snapshot.len || !snapshot.bufL || !snapshot.bufR) return;
+      if (!snapshot || !snapshot.len || !snapshot.bufL || !snapshot.bufR) continue;
       trackNo++;
       var left = new Float32Array(snapshot.bufL);
       var right = new Float32Array(snapshot.bufR);
       var stemBase = 'track-' + pad2(trackNo);
       var wavName = stemBase + '.wav';
       var midiName = stemBase + '.mid';
-      files.push({ name: wavName, data: encodeWavStereo(left, right, sampleRate) });
+      files.push({ name: wavName, data: await wavBytes(left, right, sampleRate) });
       files.push({ name: midiName, data: encodeMidiFile(entry.info.midiEvents, bpm, snapshot.len, sampleRate) });
       tracks.push({
         track: trackNo,
@@ -269,7 +350,7 @@
         audioFile: wavName,
         midiFile: midiName
       });
-    });
+    }
 
     if (!tracks.length) {
       if (status) status('No finished loops to export.');
@@ -292,6 +373,8 @@
 
   window.LoopExport = {
     exportLoops: exportLoops,
-    _internals: { encodeWavStereo: encodeWavStereo, encodeMidiFile: encodeMidiFile, buildZip: buildZip }
+    recordTap: recordTap,
+    exportStems: exportStems,
+    _internals: { encodeWavStereo: encodeWavStereo, encodeMidiFile: encodeMidiFile, buildZip: buildZip, wavBytes: wavBytes }
   };
 })();
