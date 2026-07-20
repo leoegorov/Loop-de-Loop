@@ -767,16 +767,32 @@
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       throw new Error('Microphone API unavailable (https required).');
     }
-    var constraints = {
-      audio: {
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
-        channelCount: { ideal: 2 }   // use both interface inputs as a stereo pair
-      }
+    var preferredAudio = {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      channelCount: { ideal: 2 }   // use both interface inputs as a stereo pair
     };
-    if (deviceId) constraints.audio.deviceId = { exact: deviceId };
-    var stream = await navigator.mediaDevices.getUserMedia(constraints);
+    var tries = [];
+    if (deviceId) {
+      tries.push({ audio: Object.assign({ deviceId: { exact: deviceId } }, preferredAudio) });
+      tries.push({ audio: { deviceId: { exact: deviceId } } });
+      tries.push({ audio: { deviceId: { ideal: deviceId } } });
+    }
+    tries.push({ audio: preferredAudio });
+    tries.push({ audio: true });   // broad fallback for browsers (notably iPadOS/WebKit)
+
+    var stream = null;
+    var lastErr = null;
+    for (var i = 0; i < tries.length; i++) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(tries[i]);
+        break;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    if (!stream) throw lastErr || new Error('Could not open microphone input.');
     if (this.sourceNode) { this.sourceNode.disconnect(); }
     if (this.mediaStream) { this.mediaStream.getTracks().forEach(function (t) { t.stop(); }); }
     this.mediaStream = stream;
