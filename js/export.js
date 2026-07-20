@@ -29,7 +29,7 @@
 
   /* ---------------- real-time stem capture ----------------
      A tiny recorder AudioWorklet taps a node's output into a PCM buffer. Used to
-     render the arranged song per-track by capturing the live graph while it plays. */
+     render the timeline pass per-track by capturing the live graph while it plays. */
   var RECORDER_SRC = [
     'class Rec extends AudioWorkletProcessor {',
     '  constructor() { super(); this.L = []; this.R = []; this.on = true; var s = this;',

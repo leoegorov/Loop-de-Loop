@@ -171,7 +171,7 @@
     '        if (opt.perfect) { this.perfectTrim = false; this.setupTail(frame); this.perfectAt = frame + this.xfLen; }',
     '      } else if (this.state === "stopped" && this.bufL) {',
     '        // pause semantics: resume from the frozen playhead (it did not advance',
-    '        // while stopped); explicit anchors (import/render/song) take precedence',
+    '        // while stopped); explicit anchors (import/render) take precedence',
     '        if (opt.anchor) this.anchor = opt.anchor;',
     '        else this.anchor = frame - this.stopPos;',
     '        this.state = "playing";',
@@ -470,13 +470,13 @@
       processorOptions: { comp: engine.compFrames }
     });
     this.gain = ctx.createGain();
-    this.songGain = ctx.createGain();   // arrangement gate (1 = audible, scheduled by the song player)
+    this.mixGate = ctx.createGain();   // arrangement gate (1 = audible, scheduled by the timeline player)
     this.rack = new window.FxRack(engine);
     engine.inputNode.connect(this.node);
     this.node.connect(this.rack.input);
     this.rack.output.connect(this.gain);
-    this.gain.connect(this.songGain);
-    this.songGain.connect(engine.masterGain);
+    this.gain.connect(this.mixGate);
+    this.mixGate.connect(engine.masterGain);
 
     this.node.port.onmessage = function (e) {
       var m = e.data;
@@ -694,7 +694,7 @@
     this.node.disconnect();
     this.rack.dispose();
     this.gain.disconnect();
-    this.songGain.disconnect();
+    this.mixGate.disconnect();
   };
 
   /* ---------------- engine ---------------- */
@@ -862,10 +862,10 @@
       if (c.onUpdate) c.onUpdate();
     });
   };
-  /* Play one channel for the song arranger: anchor explicitly so the loop's top
+  /* Play one channel for the timeline arranger: anchor explicitly so the loop's top
      lands on the pass start — arrangement blocks always show the loop from its
      beginning, regardless of where its playhead froze. */
-  LoopChannel.prototype.songPlayAt = function (frame) {
+  LoopChannel.prototype.playAtAnchor = function (frame) {
     if (this.state !== 'stopped') return;
     this.loadedNeedsAnchor = false;
     this.pendingAction = 'play';

@@ -2,3 +2,4 @@ serve.cmd
 todo
 todo
 NUL
+**/*.code-workspace

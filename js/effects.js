@@ -1,5 +1,5 @@
 /* Effects + FxRack: a shared effect-chain component with per-parameter LFO
-   automation, used by loop channels and the instrument buses (808/303/PRIZM).
+  automation for loop channels.
 
    Effect contract: def.build(ctx, engine) -> { input, output, set(id, v),
    tick(transport)?, dispose() }. Params are range sliders ({min,max,def,log,
@@ -14,36 +14,6 @@
   };
   var SYNC_OPTS = [['off', 'free'], ['1/16', '1/16'], ['1/8', '1/8'], ['1/8.', '1/8.'],
     ['1/4', '1/4'], ['1/2', '1/2'], ['1/1', '1 bar']];
-
-  var autoTargetRegistry = {
-    map: {},
-    listeners: [],
-    register: function (t) { this.map[t.id] = t; },
-    unregister: function (id) { delete this.map[id]; },
-    list: function () {
-      var out = [];
-      Object.keys(this.map).forEach(function (k) { out.push(autoTargetRegistry.map[k]); });
-      out.sort(function (a, b) { return a.label.localeCompare(b.label); });
-      return out;
-    },
-    get: function (id) { return this.map[id] || null; },
-    subscribe: function (fn) {
-      this.listeners.push(fn);
-      var self = this;
-      return function () {
-        var i = self.listeners.indexOf(fn);
-        if (i >= 0) self.listeners.splice(i, 1);
-      };
-    },
-    emit: function (ev) {
-      this.listeners.slice().forEach(function (fn) { fn(ev); });
-    }
-  };
-  window.FXAutomationTargets = {
-    list: function () { return autoTargetRegistry.list(); },
-    get: function (id) { return autoTargetRegistry.get(id); },
-    subscribe: function (fn) { return autoTargetRegistry.subscribe(fn); }
-  };
 
   function makeReverbIR(ctx, seconds) {
     var sr = ctx.sampleRate;
@@ -129,11 +99,6 @@
   }
 
   function beatsToSec(div, bpm) { return RATE_BEATS[div] * 60 / bpm; }
-  function autoBars(len) {
-    var beats = RATE_BEATS[len] || 4;
-    return Math.max(1, Math.round(beats / 4));
-  }
-
   /* ---------------- effect definitions ---------------- */
   window.FX_DEFS = {
     filter: {
@@ -823,166 +788,32 @@
     widener: 'Spatial', haas: 'Spatial', panner: 'Spatial', autopan: 'Spatial'
   };
 
-  /* ---------------- automation (drawable loops) ---------------- */
-  var LEN_OPTS = [['1/4', '1/4'], ['1/2', '1/2'], ['1/1', '1 bar'],
-    ['2/1', '2 bars'], ['4/1', '4 bars']];
-  var AUTO_N = 128;            // curve resolution (points across the loop)
-
-  /* value <-> normalized 0..1 across the param range (log-aware) */
-  function normOf(p, v) {
-    if (p.log) return (Math.log(v) - Math.log(p.min)) / (Math.log(p.max) - Math.log(p.min));
-    return (v - p.min) / (p.max - p.min);
-  }
-  function valOf(p, norm) {
-    norm = Math.max(0, Math.min(1, norm));
-    if (p.log) return Math.exp(Math.log(p.min) + norm * (Math.log(p.max) - Math.log(p.min)));
-    return p.min + norm * (p.max - p.min);
-  }
-
+  /* ---------------- FxRack ---------------- */
   function fmtVal(p, v) {
     return (v >= 100 ? Math.round(v) : Math.round(v * 100) / 100) + (p.unit || '');
   }
-
-  /* Render an automation lane: the drawn curve, filled, with a moving playhead. */
-  function drawLane(a, ph) {
-    var c = a.canvas, g = a.cctx;
-    var W = c.width, H = c.height;
-    g.clearRect(0, 0, W, H);
-    g.fillStyle = 'rgba(181,140,255,0.10)';
-    g.fillRect(0, 0, W, H);
-    // grid: quarters of the loop
-    g.strokeStyle = 'rgba(216,220,230,0.10)';
-    for (var q = 1; q < 4; q++) {
-      var gx = q / 4 * W;
-      g.beginPath(); g.moveTo(gx, 0); g.lineTo(gx, H); g.stroke();
-    }
-    // curve
-    g.beginPath();
-    for (var i = 0; i < AUTO_N; i++) {
-      var x = i / (AUTO_N - 1) * W;
-      var y = (1 - a.pts[i]) * H;
-      if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
-    }
-    g.lineTo(W, (1 - a.pts[AUTO_N - 1]) * H);
-    g.lineTo(W, H); g.lineTo(0, H); g.closePath();
-    g.fillStyle = 'rgba(181,140,255,0.28)';
-    g.fill();
-    g.strokeStyle = '#b58cff';
-    g.lineWidth = 1.4;
-    g.beginPath();
-    for (i = 0; i < AUTO_N; i++) {
-      var x2 = i / (AUTO_N - 1) * W, y2 = (1 - a.pts[i]) * H;
-      if (i === 0) g.moveTo(x2, y2); else g.lineTo(x2, y2);
-    }
-    g.stroke();
-    // playhead
-    if (ph >= 0) {
-      var px = ph * W;
-      g.strokeStyle = '#ffa229';
-      g.beginPath(); g.moveTo(px, 0); g.lineTo(px, H); g.stroke();
-      var idx = Math.floor(ph * AUTO_N) % AUTO_N;
-      g.fillStyle = '#ffa229';
-      g.beginPath(); g.arc(px, (1 - a.pts[idx]) * H, 2.5, 0, 2 * Math.PI); g.fill();
-    }
-  }
-
-  /* ---------------- FxRack ---------------- */
   var racks = [];
   var ticker = null;
-  var TICK_MS = 16;             // ~60 Hz control rate + lane playhead refresh
-  var nextRackId = 1;
+  var TICK_MS = 25;
 
-  /* Continuous musical phase in beats. Bar-locked while the transport runs (so
-     sweeps land on bar lines), free-running from the same value when it stops —
-     no jump at start/stop, which would otherwise glitch a live sweep. */
-  var phaseBeats = 0, lastWallMs = null;
-  function currentBeats(t) {
-    var nowMs = performance.now();
-    if (t.running) {
-      phaseBeats = (t.nowFrame() - t.origin) / t.beatFrames();
-      lastWallMs = nowMs;
-    } else {
-      if (lastWallMs === null) lastWallMs = nowMs;
-      phaseBeats += (nowMs - lastWallMs) / 1000 * t.bpm / 60;
-      lastWallMs = nowMs;
-    }
-    return phaseBeats;
-  }
-
-  var dispTick = 0;
   function tickAll() {
-    dispTick++;
-    var showNow = (dispTick % 4) === 0;   // refresh readouts ~15 Hz, not every frame
     var t = racks.length ? racks[0].engine.transport : null;
     if (!t) return;
-    var beats = currentBeats(t);
     for (var r = 0; r < racks.length; r++) {
       var rack = racks[r];
       for (var f = 0; f < rack.fx.length; f++) {
         var entry = rack.fx[f];
         if (entry.inst.tick) entry.inst.tick(t);
-        for (var pi = 0; pi < entry.def.params.length; pi++) {
-          var p = entry.def.params[pi];
-          if (p.type === 'select') continue;
-          var a = entry.autos[p.id];
-          if (!a) continue;
-          var cyc = RATE_BEATS[a.len] || 4;
-          var ph = ((beats / cyc) % 1 + 1) % 1;
-
-          if (a.rec) {
-            var rel = (beats - a.recStartBeat) / cyc;
-            var recNorm = normOf(p, entry.values[p.id]);
-            var ridx = Math.round(ph * (AUTO_N - 1));
-            if (a.recLastIdx >= 0 && ridx !== a.recLastIdx) {
-              var lo = Math.min(ridx, a.recLastIdx), hi = Math.max(ridx, a.recLastIdx);
-              for (var rk = lo; rk <= hi; rk++) {
-                var rf = (rk - a.recLastIdx) / (ridx - a.recLastIdx);
-                a.pts[rk] = a.recLastNorm + (recNorm - a.recLastNorm) * rf;
-              }
-            } else {
-              a.pts[ridx] = recNorm;
-            }
-            a.recLastIdx = ridx;
-            a.recLastNorm = recNorm;
-            if (rel >= 1) {
-              a.rec = false;
-              if (a.recBtn) a.recBtn.classList.remove('on');
-            }
-            if (showNow) {
-              if (a.cctx) drawLane(a, ph);
-              if (entry.outEls && entry.outEls[p.id]) entry.outEls[p.id].textContent = fmtVal(p, entry.values[p.id]);
-            }
-            continue;
-          }
-
-          if (!a.on || a.songForce === false) {
-            if (showNow && a.cctx) drawLane(a, ph);
-            continue;
-          }
-
-          // sample the drawn curve (linear interpolation between points)
-          var fidx = ph * AUTO_N;
-          var i0 = Math.floor(fidx) % AUTO_N, i1 = (i0 + 1) % AUTO_N, fr = fidx - Math.floor(fidx);
-          var norm = a.pts[i0] * (1 - fr) + a.pts[i1] * fr;
-          var v = valOf(p, norm);
-          entry.inst.set(p.id, v);
-          if (showNow) {
-            if (entry.outEls && entry.outEls[p.id]) entry.outEls[p.id].textContent = fmtVal(p, v);
-            if (a.cctx) drawLane(a, ph);
-          }
-        }
       }
     }
   }
 
   function FxRack(engine) {
     this.engine = engine;
-    this.id = nextRackId++;
-    this._nextFxUid = 1;
     this.input = engine.ctx.createGain();
     this.output = engine.ctx.createGain();
     this.input.connect(this.output);
-    this.fx = [];        // { key, def, inst, values, autos, card, outEls }
+    this.fx = [];        // { key, def, inst, values, card, outEls }
     this.listEl = null;
     racks.push(this);
     if (!ticker) ticker = setInterval(tickAll, TICK_MS);
@@ -992,23 +823,14 @@
     var def = window.FX_DEFS[key];
     if (!def) return null;
     var inst = def.build(this.engine.ctx, this.engine);
-    var values = {}, autos = {};
+    var values = {};
     def.params.forEach(function (p) {
       values[p.id] = p.def;
       inst.set(p.id, p.def);
-      if (p.type !== 'select' && p.auto !== false) {
-        var pts = new Float32Array(AUTO_N);
-        pts.fill(normOf(p, p.def));   // starts flat at the slider's value
-        autos[p.id] = {
-          on: false, len: '1/1', pts: pts, canvas: null, cctx: null,
-          songForce: null, rec: false, recStartBeat: 0, recLastIdx: -1, recLastNorm: 0,
-          recBtn: null
-        };
-      }
     });
     var entry = {
-      key: key, uid: this._nextFxUid++, def: def, inst: inst,
-      values: values, autos: autos, card: null, outEls: {}, targetIds: []
+      key: key, def: def, inst: inst,
+      values: values, card: null, outEls: {}
     };
     this.fx.push(entry);
     this.rebuild();
@@ -1020,7 +842,6 @@
     var i = this.fx.indexOf(entry);
     if (i < 0) return;
     this.fx.splice(i, 1);
-    entry.targetIds.forEach(function (id) { autoTargetRegistry.unregister(id); });
     this.rebuild();
     entry.inst.dispose();
     if (entry.card) entry.card.remove();
@@ -1039,7 +860,6 @@
 
   FxRack.prototype.dispose = function () {
     this.fx.forEach(function (e) {
-      e.targetIds.forEach(function (id) { autoTargetRegistry.unregister(id); });
       e.inst.dispose();
     });
     this.fx = [];
@@ -1047,90 +867,6 @@
     this.output.disconnect();
     var i = racks.indexOf(this);
     if (i >= 0) racks.splice(i, 1);
-  };
-
-  FxRack.prototype._findAuto = function (laneId) {
-    for (var fi = 0; fi < this.fx.length; fi++) {
-      var e = this.fx[fi];
-      for (var pi = 0; pi < e.def.params.length; pi++) {
-        var p = e.def.params[pi];
-        if (p.type === 'select') continue;
-        var id = this.id + ':' + e.uid + ':' + p.id;
-        if (id === laneId) return { entry: e, param: p, auto: e.autos[p.id] };
-      }
-    }
-    return null;
-  };
-
-  FxRack.prototype.songAutomationTracks = function (prefix) {
-    var out = [];
-    for (var fi = 0; fi < this.fx.length; fi++) {
-      var e = this.fx[fi];
-      for (var pi = 0; pi < e.def.params.length; pi++) {
-        var p = e.def.params[pi];
-        if (p.type === 'select') continue;
-        var a = e.autos[p.id];
-        if (!a || !a.on) continue;
-        var laneId = this.id + ':' + e.uid + ':' + p.id;
-        out.push({
-          id: laneId,
-          label: prefix + ' · ' + e.def.name + ' · ' + p.label,
-          loopBars: autoBars(a.len),
-          apply: this.songSetAutomationActive.bind(this, laneId),
-          reset: this.songReleaseAutomation.bind(this, laneId)
-        });
-      }
-    }
-    return out;
-  };
-
-  FxRack.prototype.songAutomationCandidates = function (prefix) {
-    var out = [];
-    for (var fi = 0; fi < this.fx.length; fi++) {
-      var e = this.fx[fi];
-      for (var pi = 0; pi < e.def.params.length; pi++) {
-        var p = e.def.params[pi];
-        if (p.type === 'select') continue;
-        var a = e.autos[p.id];
-        if (!a) continue;
-        out.push({
-          id: this.id + ':' + e.uid + ':' + p.id,
-          label: prefix + ' · ' + e.def.name + ' · ' + p.label,
-          active: !!a.on,
-          activate: (function (auto) {
-            return function () {
-              if (auto.on) return;
-              if (auto.toggleBtn) auto.toggleBtn.click();
-              else auto.on = true;
-            };
-          })(a)
-        });
-      }
-    }
-    return out;
-  };
-
-  FxRack.prototype.songSetAutomationActive = function (laneId, on) {
-    var hit = this._findAuto(laneId);
-    if (!hit || !hit.auto) return;
-    var a = hit.auto;
-    a.songForce = on ? true : false;
-    if (!on) {
-      a.rec = false;
-      if (a.recBtn) a.recBtn.classList.remove('on');
-      hit.entry.inst.set(hit.param.id, hit.entry.values[hit.param.id]);
-      if (hit.entry.outEls && hit.entry.outEls[hit.param.id]) {
-        hit.entry.outEls[hit.param.id].textContent = fmtVal(hit.param, hit.entry.values[hit.param.id]);
-      }
-    }
-  };
-
-  FxRack.prototype.songReleaseAutomation = function (laneId) {
-    var hit = this._findAuto(laneId);
-    if (!hit || !hit.auto) return;
-    hit.auto.songForce = null;
-    hit.auto.rec = false;
-    if (hit.auto.recBtn) hit.auto.recBtn.classList.remove('on');
   };
 
   /* ---------------- rack UI ---------------- */
@@ -1231,145 +967,11 @@
         entry.values[p.id] = v;
         entry.inst.set(p.id, v);
         val.textContent = fmtVal(p, v);
-        autoTargetRegistry.emit({ targetId: self.id + ':' + entry.uid + ':' + p.id, value: v, source: 'manual' });
       });
       row.appendChild(lbl); row.appendChild(input); row.appendChild(val);
+      row.appendChild(document.createElement('span'));
+      card.appendChild(row);
 
-      var a = entry.autos[p.id];
-      if (a) {
-        var ab = document.createElement('button');
-        ab.className = 'fx-auto-btn';
-        ab.textContent = 'A';
-        ab.title = 'Draw an automation loop for this parameter';
-        a.toggleBtn = ab;
-        row.appendChild(ab);
-        card.appendChild(row);
-
-        var arow = document.createElement('div');
-        arow.className = 'fx-auto hidden';
-
-        var bar = document.createElement('div');
-        bar.className = 'fx-auto-bar';
-        var lsel = document.createElement('select');
-        lsel.title = 'Loop length';
-        LEN_OPTS.forEach(function (o) {
-          var op = document.createElement('option');
-          op.value = o[0]; op.textContent = o[1];
-          lsel.appendChild(op);
-        });
-        lsel.value = a.len;
-        lsel.addEventListener('change', function () { a.len = this.value; });
-        var flat = document.createElement('button');
-        flat.textContent = 'flat';
-        flat.title = 'Reset the curve to the current slider value';
-        flat.addEventListener('click', function () {
-          a.pts.fill(normOf(p, entry.values[p.id]));
-          if (a.cctx) drawLane(a, -1);
-        });
-        var rec = document.createElement('button');
-        rec.textContent = 'rec';
-        rec.title = 'Record one automation cycle from slider movement';
-        rec.addEventListener('click', function () {
-          a.on = true;
-          ab.classList.add('on');
-          arow.classList.remove('hidden');
-          val.classList.add('auto-live');
-          if (!a.cctx) {
-            canvas.width = canvas.clientWidth || 200;
-            a.cctx = canvas.getContext('2d');
-          }
-          a.rec = !a.rec;
-          if (a.rec) {
-            var t = self.engine.transport;
-            var beats = currentBeats(t);
-            a.recStartBeat = beats;
-            a.recLastIdx = -1;
-            a.recLastNorm = normOf(p, entry.values[p.id]);
-            rec.classList.add('on');
-          } else {
-            rec.classList.remove('on');
-          }
-          drawLane(a, -1);
-        });
-        a.recBtn = rec;
-        bar.appendChild(lsel); bar.appendChild(flat);
-        bar.appendChild(rec);
-        arow.appendChild(bar);
-
-        var canvas = document.createElement('canvas');
-        canvas.className = 'fx-auto-lane';
-        canvas.height = 46;
-        arow.appendChild(canvas);
-        a.canvas = canvas;
-
-        // draw the curve by dragging across the lane
-        var drawing = false, lastIdx = -1, lastNorm = 0;
-        function paintAt(e) {
-          var rect = canvas.getBoundingClientRect();
-          var x = Math.min(Math.max(e.clientX - rect.left, 0), rect.width - 0.001);
-          var y = Math.min(Math.max(e.clientY - rect.top, 0), rect.height);
-          var idx = Math.round(x / rect.width * (AUTO_N - 1));
-          var norm = 1 - y / rect.height;
-          if (lastIdx >= 0 && idx !== lastIdx) {
-            var lo = Math.min(idx, lastIdx), hi = Math.max(idx, lastIdx);
-            for (var k = lo; k <= hi; k++) {
-              var f2 = (k - lastIdx) / (idx - lastIdx);
-              a.pts[k] = lastNorm + (norm - lastNorm) * f2;
-            }
-          } else {
-            a.pts[idx] = norm;
-          }
-          lastIdx = idx; lastNorm = norm;
-          drawLane(a, -1);
-        }
-        canvas.addEventListener('pointerdown', function (e) {
-          drawing = true; lastIdx = -1; canvas.setPointerCapture(e.pointerId); paintAt(e);
-        });
-        canvas.addEventListener('pointermove', function (e) { if (drawing) paintAt(e); });
-        canvas.addEventListener('pointerup', function () { drawing = false; lastIdx = -1; });
-        canvas.addEventListener('pointercancel', function () { drawing = false; lastIdx = -1; });
-
-        ab.addEventListener('click', function () {
-          a.on = !a.on;
-          if (!a.on) {
-            a.rec = false;
-            if (a.recBtn) a.recBtn.classList.remove('on');
-            a.songForce = null;
-          }
-          ab.classList.toggle('on', a.on);
-          arow.classList.toggle('hidden', !a.on);
-          val.classList.toggle('auto-live', a.on);
-          if (a.on) {
-            canvas.width = canvas.clientWidth || 200;
-            a.cctx = canvas.getContext('2d');
-            drawLane(a, -1);
-          } else {
-            entry.inst.set(p.id, entry.values[p.id]);
-            val.textContent = fmtVal(p, entry.values[p.id]);
-          }
-        });
-        card.appendChild(arow);
-      } else {
-        row.appendChild(document.createElement('span'));
-        card.appendChild(row);
-      }
-
-      var targetId = self.id + ':' + entry.uid + ':' + p.id;
-      autoTargetRegistry.register({
-        id: targetId,
-        label: entry.def.name + ' · ' + p.label,
-        min: p.min, max: p.max, log: !!p.log,
-        get: function () { return entry.values[p.id]; },
-        apply: function (v, source) {
-          v = Math.max(p.min, Math.min(p.max, v));
-          entry.values[p.id] = v;
-          entry.inst.set(p.id, v);
-          val.textContent = fmtVal(p, v);
-          input.value = p.log ? Math.log(v) : v;
-          autoTargetRegistry.emit({ targetId: targetId, value: v, source: source || 'automation' });
-        }
-      });
-      entry.targetIds.push(targetId);
     });
 
     entry.card = card;
