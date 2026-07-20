@@ -89,7 +89,7 @@ body {
   background: #333; transition: background 0.05s;
 }
 #beat-led.on { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
-#beat-led.bar { background: var(--play); box-shadow: 0 0 8px var(--play); }
+#beat-led.bar { background: #fff; box-shadow: 0 0 8px #fff; }
 #clock-led {
   width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: #333;
 }
