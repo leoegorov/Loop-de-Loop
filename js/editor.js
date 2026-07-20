@@ -1,7 +1,7 @@
 /* Waveform editor: view and edit a loop's audio after recording.
    Non-destructive while open — edits live on copies and are written into the
    playing loop only on APPLY (worklet "replace", grid alignment preserved via
-   anchorDelta). MIDI events captured with the loop follow trims/cuts/rotations. */
+   anchorDelta). */
 (function () {
   'use strict';
 
@@ -25,7 +25,7 @@
           '<button data-op="trim" title="Keep only the selection; loop start moves to the selection start">TRIM</button>' +
           '<button data-op="trimsil" title="Auto-remove leading silence (keeps a 5 ms pre-roll); no selection needed">TRIM SIL</button>' +
           '<button data-op="cut" title="Remove the selection and join the remainder">CUT</button>' +
-          '<button data-op="silence" title="Silence the selection (MIDI events inside are dropped)">SILENCE</button>' +
+          '<button data-op="silence" title="Silence the selection">SILENCE</button>' +
           '<button data-op="fadein" title="Fade in across the selection">FADE IN</button>' +
           '<button data-op="fadeout" title="Fade out across the selection">FADE OUT</button>' +
           '<button data-op="reverse" title="Reverse the selection (or the whole loop)">REVERSE</button>' +
@@ -159,17 +159,9 @@
     }
     g.stroke();
 
-    // center line + MIDI event ticks
+    // center line
     g.strokeStyle = 'rgba(139,147,165,0.35)';
     g.beginPath(); g.moveTo(0, mid); g.lineTo(W, mid); g.stroke();
-    if (ed.midi.length) {
-      g.fillStyle = '#ffa229';
-      ed.midi.forEach(function (ev) {
-        if ((ev.data[0] & 0xF0) === 0x90 && ev.data[2] > 0) {
-          g.fillRect(ev.off / ed.len * W - 1, H - 6, 2, 6);
-        }
-      });
-    }
 
     updateLabels();
   }
@@ -180,7 +172,6 @@
 
   function updateLabels() {
     ui.info.textContent = fmtSec(ed.len) + ' · ' + ed.len + ' smp' +
-      (ed.midi.length ? ' · ♪' + ed.midi.length : '') +
       (ed.dirty ? ' · unapplied edits' : '');
     var sel = selection();
     ui.selLabel.textContent = sel
@@ -193,7 +184,6 @@
   function pushUndo() {
     ed.undoStack.push({
       L: ed.L.slice(), R: ed.R.slice(), len: ed.len,
-      midi: ed.midi.map(function (e) { return { off: e.off, data: e.data }; }),
       anchorDelta: ed.anchorDelta
     });
     if (ed.undoStack.length > 12) ed.undoStack.shift();
@@ -217,8 +207,6 @@
       pushUndo();
       ed.L = ed.L.slice(sel.a, sel.b);
       ed.R = ed.R.slice(sel.a, sel.b);
-      ed.midi = ed.midi.filter(function (e) { return e.off >= sel.a && e.off < sel.b; })
-        .map(function (e) { return { off: e.off - sel.a, data: e.data }; });
       ed.anchorDelta += sel.a;
       ed.len = ed.L.length;
 
@@ -250,9 +238,6 @@
       pushUndo();
       ed.L = ed.L.slice(cutTo);
       ed.R = ed.R.slice(cutTo);
-      ed.midi = ed.midi.map(function (e) {
-        return { off: Math.max(0, e.off - cutTo), data: e.data };
-      });
       ed.anchorDelta += cutTo;
       ed.len = ed.L.length;
       ed.selA = ed.selB = null;
@@ -268,8 +253,6 @@
       nl.set(ed.L.subarray(0, sel.a)); nl.set(ed.L.subarray(sel.b), sel.a);
       nr.set(ed.R.subarray(0, sel.a)); nr.set(ed.R.subarray(sel.b), sel.a);
       ed.L = nl; ed.R = nr; ed.len = n;
-      ed.midi = ed.midi.filter(function (e) { return e.off < sel.a || e.off >= sel.b; })
-        .map(function (e) { return { off: e.off < sel.a ? e.off : e.off - (sel.b - sel.a), data: e.data }; });
 
     } else if (op === 'silence') {
       sel = needSel('Silence needs a selection.');
@@ -277,7 +260,6 @@
       pushUndo();
       ed.L.fill(0, sel.a, sel.b);
       ed.R.fill(0, sel.a, sel.b);
-      ed.midi = ed.midi.filter(function (e) { return e.off < sel.a || e.off >= sel.b; });
 
     } else if (op === 'fadein' || op === 'fadeout') {
       sel = needSel('Fades need a selection.');
@@ -327,9 +309,6 @@
       rl.set(ed.L.subarray(sel.a)); rl.set(ed.L.subarray(0, sel.a), ed.len - sel.a);
       rr.set(ed.R.subarray(sel.a)); rr.set(ed.R.subarray(0, sel.a), ed.len - sel.a);
       ed.L = rl; ed.R = rr;
-      ed.midi = ed.midi.map(function (e) {
-        return { off: ((e.off - sel.a) % ed.len + ed.len) % ed.len, data: e.data };
-      });
       ed.anchorDelta += sel.a;
     }
 
@@ -341,7 +320,7 @@
     if (!ed || !ed.undoStack.length) return;
     var s = ed.undoStack.pop();
     ed.L = s.L; ed.R = s.R; ed.len = s.len;
-    ed.midi = s.midi; ed.anchorDelta = s.anchorDelta;
+    ed.anchorDelta = s.anchorDelta;
     ed.selA = ed.selB = null;
     ed.dirty = ed.undoStack.length > 0;
     render();
@@ -350,7 +329,6 @@
   function reset() {
     if (!ed) return;
     ed.L = ed.origL.slice(); ed.R = ed.origR.slice(); ed.len = ed.origL.length;
-    ed.midi = ed.origMidi.map(function (e) { return { off: e.off, data: e.data }; });
     ed.anchorDelta = 0;
     ed.undoStack = [];
     ed.dirty = false;
@@ -360,17 +338,13 @@
 
   function apply() {
     if (!ed) return;
-    var ok = ed.ch.applyEdit(
-      ed.L.slice(), ed.R.slice(), ed.anchorDelta,
-      ed.midi.map(function (e) { return { off: e.off, data: e.data }; })
-    );
+    var ok = ed.ch.applyEdit(ed.L.slice(), ed.R.slice(), ed.anchorDelta);
     if (!ok) {
       if (ed.status) ed.status('Cannot apply while the loop is recording or overdubbing.');
       return;
     }
     // applied state becomes the new baseline
     ed.origL = ed.L.slice(); ed.origR = ed.R.slice();
-    ed.origMidi = ed.midi.map(function (e) { return { off: e.off, data: e.data }; });
     ed.anchorDelta = 0;
     ed.undoStack = [];
     ed.dirty = false;
@@ -403,9 +377,7 @@
       chLabel: chLabel,
       sr: engine.ctx.sampleRate,
       L: L, R: R, len: L.length,
-      midi: ch.midiEvents.map(function (e) { return { off: e.off, data: e.data }; }),
       origL: L.slice(), origR: R.slice(),
-      origMidi: ch.midiEvents.map(function (e) { return { off: e.off, data: e.data }; }),
       anchorDelta: 0,
       undoStack: [],
       dirty: false,

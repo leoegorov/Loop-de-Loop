@@ -21,7 +21,6 @@
     '    this.pending = null;',
     '    this.anchor = 0;',
     '    this.stopPos = 0;   // frozen playhead position while stopped (pause/resume)',
-    '    this.oneShot = false;   // play once and stop instead of looping',
     '    this.len = 0;',
     '    this.bufL = null; this.bufR = null;',
     '    this.undoL = null; this.undoR = null;',
@@ -71,7 +70,7 @@
     '      this.sendState();',
     '    } else if (m.cmd === "rotate") {',
     '      // shift loop content earlier by m.frames (mod length), then re-fade the seam;',
-    '      // used to align MIDI-bounce recordings whose audio arrived late',
+    '      // used to align bounced recordings whose audio arrived late',
     '      if (this.bufL && this.len > 1) {',
     '        var sh = ((Math.round(m.frames) % this.len) + this.len) % this.len;',
     '        if (sh > 0) {',
@@ -103,8 +102,6 @@
     '      }',
     '    } else if (m.cmd === "comp") {',
     '      this.comp = m.value;',
-    '    } else if (m.cmd === "oneshot") {',
-    '      this.oneShot = !!m.value;',
     '    } else if (m.cmd === "transpose") {',
     '      this.pitchRate = Math.pow(2, (m.value || 0) / 12);',
     '    }',
@@ -179,9 +176,6 @@
     '        else this.anchor = frame - this.stopPos;',
     '        this.state = "playing";',
     '      }',
-    '    } else if (a === "retrigger") {',
-    '      // song one-shot: (re)start from the top at this frame regardless of state',
-    '      if (this.bufL) { this.anchor = opt.anchor || frame; this.stopPos = 0; this.state = "playing"; }',
     '    } else if (a === "stop") {',
     '      if (this.state === "recording") {',
     '        this.state = "empty"; this.recL = this.recR = null; this.recLen = 0;',
@@ -257,7 +251,7 @@
     '      var b = inR ? inR[j] : a;',
     '      if (playing) {',
     '        var pos = frame - this.anchor;',
-    '        if (pos >= 0 && !(this.oneShot && pos >= this.len)) {',
+    '        if (pos >= 0) {',
     '          pos = pos % this.len;',
     '          if (this.pitchRate === 1) {',
     '            outL[j] = this.bufL[pos]; outR[j] = this.bufR[pos];',
@@ -328,12 +322,6 @@
     '      }',
     '      this.run(inL, inR, outL, outR, i, end, blockStart);',
     '      i = end;',
-    '    }',
-    '    // one-shot: after a full pass has played, stop (reset to the top for replay)',
-    '    if (this.oneShot && this.state === "playing" && this.len > 0 &&',
-    '        currentFrame + N - this.anchor >= this.len) {',
-    '      this.state = "stopped"; this.stopPos = 0;',
-    '      this.sendState();',
     '    }',
     '    this.blockCount++;',
     '    if (this.blockCount % 10 === 0) {',
@@ -464,27 +452,13 @@
     this.recSec = 0;
     this.hasUndo = false;
     this.quantOverride = 'global'; // per-loop quantize: 'global' | 'bar' | 'beat' | 'off'
-    this.armed = false;         // start recording on first incoming MIDI note
-    this.midiRec = false;       // capture incoming MIDI alongside the audio
-    this.autoEnd = false;       // close the loop after MIDI goes silent while recording
-    this.sawNote = false;       // a note-on arrived since recording started
-    this.lastMidiAbs = 0;       // absolute frame of last MIDI activity while recording
-    this.lastNoteOnAbs = 0;     // absolute frame of last note-on while recording
-    this.midiEvents = [];       // { off: frames-from-loop-start, data: [st,d1,d2] }
-    this.midiMute = false;      // suppress looped MIDI output (e.g. after a sequencer bounce)
-    this.midiTarget = 'ext';    // 'ext' = external MIDI port, 'int' = internal PRIZM synth
-    this.transpose = 0;         // semitones; audio is re-pitched (audiojs), MIDI notes shift with it
+    this.transpose = 0;         // semitones; audio is re-pitched (audiojs)
     this.origBuf = null;        // pristine (transpose 0) audio, cached to re-pitch from
     this._transposeToken = 0;   // guards out-of-order async re-pitch renders
-    this.oneShot = false;       // play once and stop instead of looping (live + song)
-    this.seqPattern = null;     // sequencer pattern for this channel { bars, chan, notes }
-    this.pendingMidi = [];      // { f: absolute frame, data } captured while rec/overdub
-    this.midiUndo = null;       // snapshot for one-level overdub undo
     this.anchorFrame = 0;
     this.lenFrames = 0;
     this.awaitPerfect = false;  // tempo-lock deferred until the perfect pass reports
     this.loadedNeedsAnchor = false; // imported loop: align to the bar grid on first play
-    this.schedFrom = null;      // MIDI playback: absolute frame scheduled up to
     this.onUpdate = null;       // UI hook: full state refresh
     this.onPos = null;          // UI hook: position only
 
@@ -520,29 +494,19 @@
         if (prev === 'recording' && m.state === 'playing') {
           if (m.perfecting) {
             // perfect pass may still trim the start — wait for the corrected
-            // length/anchor before locking tempo and placing MIDI events
+            // length/anchor before locking tempo
             self.awaitPerfect = true;
           } else {
-            self.finalizePendingMidi();
             engine.onLoopClosed(self, m.len, m.anchor);
           }
         }
         if (m.perfected && self.awaitPerfect) {
           self.awaitPerfect = false;
-          self.finalizePendingMidi();
           engine.onLoopClosed(self, m.len, m.anchor);
-        }
-        if (prev !== 'overdubbing' && m.state === 'overdubbing') {
-          self.midiUndo = self.midiEvents.slice();
-          self.hasUndo = true;
-        }
-        if (prev === 'overdubbing' && m.state !== 'overdubbing') {
-          self.finalizePendingMidi();
         }
         if (m.state === 'empty') {
           self.hasUndo = false;
           self.awaitPerfect = false;
-          self.midiEvents = []; self.pendingMidi = []; self.midiUndo = null;
         }
         if (self.onUpdate) self.onUpdate();
       } else if (m.ev === 'pos') {
@@ -552,7 +516,6 @@
         if (self.onPos) self.onPos();
       } else if (m.ev === 'undone') {
         self.hasUndo = false;
-        if (self.midiUndo) { self.midiEvents = self.midiUndo; self.midiUndo = null; }
         if (self.onUpdate) self.onUpdate();
       }
     };
@@ -579,13 +542,6 @@
     var frame = eng.frameForAction(this, action);
     var q = eng.effQuantize(this);
     var free = q === 'off';
-    if (action === 'record') {
-      this.sawNote = false;
-      this.lastMidiAbs = 0;
-      this.lastNoteOnAbs = 0;
-    }
-    // kept even for immediate actions (until the worklet confirms) so MIDI capture
-    // doesn't drop events arriving in the scheduling gap — e.g. the arm-trigger note
     this.pendingAction = action;
     var msg = { cmd: 'schedule', action: action, frame: frame, free: free };
     if (eng.perfectLoops) {
@@ -632,14 +588,12 @@
   LoopChannel.prototype.clear = function () {
     this.node.port.postMessage({ cmd: 'clear' });
     this.pendingAction = null;
-    this.armed = false;
-    this.midiEvents = []; this.pendingMidi = []; this.midiUndo = null;
     this._clearTransposeBase();
   };
 
   /* Close the loop at an exact length. If that point is still in the future the close
-     is scheduled normally; if it already passed (auto-end after MIDI silence), the
-     worklet closes retroactively and trims the trailing silence. */
+     is scheduled normally; if it already passed, the worklet closes retroactively and
+     trims the trailing silence. */
   LoopChannel.prototype.closeWithLength = function (lenFrames, opts) {
     if (this.state !== 'recording') return;
     var eng = this.engine;
@@ -667,10 +621,8 @@
   /* Write an edited buffer into the live loop (waveform editor APPLY).
      anchorDelta = frames removed from / rotated past the loop start, so the
      remaining material keeps its position on the musical grid. */
-  LoopChannel.prototype.applyEdit = function (L, R, anchorDelta, midiEvents) {
+  LoopChannel.prototype.applyEdit = function (L, R, anchorDelta) {
     if (this.state !== 'playing' && this.state !== 'stopped') return false;
-    if (midiEvents) this.midiEvents = midiEvents;
-    this.midiUndo = null;
     this.hasUndo = false;
     this.node.port.postMessage(
       { cmd: 'replace', bufL: L.buffer, bufR: R.buffer, anchorDelta: anchorDelta || 0 },
@@ -680,38 +632,6 @@
     return true;
   };
 
-  /* Store an incoming MIDI event (absolute frame) while this channel is capturing.
-     pendingAction === 'record' counts too, so the arm-trigger note itself is kept. */
-  LoopChannel.prototype.captureMidi = function (data, absFrame) {
-    if (!this.midiRec) return;
-    var capturing = this.state === 'recording' || this.state === 'overdubbing' ||
-      this.pendingAction === 'record' || this.pendingAction === 'overdub';
-    if (!capturing) return;
-    this.pendingMidi.push({ f: absFrame, data: data });
-  };
-
-  /* Convert captured absolute-frame events to loop offsets once anchor/len are known. */
-  LoopChannel.prototype.finalizePendingMidi = function () {
-    var anchor = this.anchorFrame, len = this.lenFrames;
-    var slack = this.engine.ctx.sampleRate * 0.05;
-    for (var i = 0; i < this.pendingMidi.length; i++) {
-      var ev = this.pendingMidi[i];
-      var off = ev.f - anchor;
-      if (off < -slack) continue;      // stray event from well before the loop started
-      if (off < 0) off = 0;            // arm-trigger note lands on the downbeat
-      if (len > 0) off = off % len;
-      this.midiEvents.push({ off: off, data: ev.data });
-    }
-    this.midiEvents.sort(function (a, b) { return a.off - b.off; });
-    this.pendingMidi = [];
-  };
-
-  /* MIDI channels used by captured events (for all-notes-off flushing). */
-  LoopChannel.prototype.usedMidiChannels = function () {
-    var set = {};
-    this.midiEvents.forEach(function (e) { set[e.data[0] & 0x0F] = true; });
-    return Object.keys(set).map(Number);
-  };
   LoopChannel.prototype.undo = function () {
     this.node.port.postMessage({ cmd: 'undo' });
     this._clearTransposeBase();
@@ -722,8 +642,7 @@
   LoopChannel.prototype.setComp = function (frames) {
     this.node.port.postMessage({ cmd: 'comp', value: frames });
   };
-  /* Transpose the loop. MIDI notes shift immediately (this.transpose). The audio is
-     re-pitched with the audiojs pitch-shift phase vocoder (tempo-locked), pre-rendered
+  /* Transpose the loop. The audio is re-pitched with the audiojs pitch-shift phase vocoder (tempo-locked), pre-rendered
      from a cached pristine copy and swapped into the worklet. Falls back to the
      worklet's granular shifter if the pitch-shift lib isn't present. */
   LoopChannel.prototype.setTranspose = function (semitones) {
@@ -769,18 +688,6 @@
         [L.buffer, R.buffer]);
     });
   };
-  LoopChannel.prototype.setOneShot = function (on) {
-    this.oneShot = !!on;
-    this.node.port.postMessage({ cmd: 'oneshot', value: this.oneShot });
-  };
-  /* Song one-shot: (re)start the loop from the top at an explicit frame, regardless
-     of its current state (used at each contiguous block start in the arrangement). */
-  LoopChannel.prototype.songOneShotAt = function (frame) {
-    this.pendingAction = 'play';
-    this.node.port.postMessage({ cmd: 'schedule', action: 'retrigger', frame: frame, anchor: frame });
-    if (this.onUpdate) this.onUpdate();
-  };
-
   LoopChannel.prototype.destroy = function () {
     this.node.port.postMessage({ cmd: 'clear' });
     try { this.engine.inputNode.disconnect(this.node); } catch (e) {}
@@ -798,7 +705,6 @@
     this.quantize = 'bar';
     this.firstLoopSetsTempo = true;
     this.perfectLoops = true; // auto-trim leading silence + de-click loop seams
-    this.autoEndSec = 2;      // MIDI-silence timeout for channels with AUTO enabled
     this.compFrames = 0;
     this.inputNode = null;    // all channel worklets read from here
     this.monitorGain = null;
@@ -1026,7 +932,7 @@
     }
   };
 
-  /* Map a performance.now() timestamp to an audio frame (for capturing MIDI input). */
+  /* Map a performance.now() timestamp to an audio frame. */
   Engine.prototype.perfToFrame = function (perf) {
     var ctx = this.ctx;
     var ts = ctx.getOutputTimestamp ? ctx.getOutputTimestamp() : null;
@@ -1036,7 +942,7 @@
     return (ctx.currentTime + (perf - performance.now()) / 1000) * ctx.sampleRate;
   };
 
-  /* Map an audio frame to a performance.now() timestamp (for Web MIDI scheduling). */
+  /* Map an audio frame to a performance.now() timestamp. */
   Engine.prototype.frameToPerf = function (frame) {
     var ctx = this.ctx;
     var ts = ctx.getOutputTimestamp ? ctx.getOutputTimestamp() : null;

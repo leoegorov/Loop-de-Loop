@@ -1,15 +1,11 @@
-/* UI wiring: channel strips, transport display, MIDI learn, keyboard shortcuts. */
+/* UI wiring: channel strips, transport display, keyboard shortcuts. */
 (function () {
   'use strict';
 
   var engine = null;   // constructed on power-on so a failed script load is reportable
-  var midi = null;
   var drums = null;
   var bass = null;
   var prizm = null;
-  var choppah = null;
-  var internalSynths = {};   // midiTarget key -> engine instance (registry)
-  function internalSynthFor(t) { return (t && internalSynths[t]) || null; }
   var strips = [];           // parallel to engine.channels: { ch, root, els }
   var autoStrips = [];       // automation loop strips
   var autoTargetsUnsub = null;
@@ -40,7 +36,7 @@
     try {
       if (!window.LooperEngine) throw new Error('engine.js failed to load — check the browser console.');
       if (!window.isSecureContext) {
-        throw new Error('This page is not running in a secure context (https). Microphone, MIDI and the audio engine are unavailable — open the site via https://');
+        throw new Error('This page is not running in a secure context (https). Microphone and the audio engine are unavailable — open the site via https://');
       }
       engine = new window.LooperEngine();
       await engine.init();
@@ -51,14 +47,6 @@
     }
 
     try {
-      powerMsg('Requesting MIDI access — answer the browser prompt if one appears…');
-      midi = new window.MidiManager(engine);
-      // don't hang forever on a silenced/ignored permission prompt
-      var midiOk = await Promise.race([
-        midi.init(),
-        new Promise(function (res) { setTimeout(function () { res(false); }, 8000); })
-      ]);
-
       if (window.FXDSP) window.FXDSP.load(engine.ctx);   // bitcrusher/freq-shift/pitch FX worklet
 
       drums = new window.DrumMachine(engine);
@@ -73,17 +61,7 @@
       prizm.buildUI($('prizm-panel'), $('prizm-ui'));
       wirePrizm();
 
-      choppah = new window.Choppah(engine);
-      choppah.buildUI($('choppah-panel'), $('choppah-ui'));
-      wireChoppah();
-
       wireSong();
-      // internal-synth targets for the sequencer's OUT selector and the loop pump
-      internalSynths.prizm = prizm;
-      internalSynths.chop = choppah;
-      internalSynths.int = prizm;             // back-compat: old channels used 'int'
-      window.MidiSequencer.registerSynth('prizm', 'PRIZM synth', prizm);
-      window.MidiSequencer.registerSynth('chop', 'CHOPPAH', choppah);
 
       drums.fxRack = attachInstrumentFx(drums.out, 'drums-fx', 'drums-fx-btn');
       bass.fxRack = attachInstrumentFx(bass.out, 'bass-fx', 'bass-fx-btn');
@@ -91,8 +69,6 @@
       bass.bankUI = buildPatternBank('bass-bank', bass, '303');
       prizm.fxRack = attachInstrumentFx(prizm.out, 'prizm-fx', 'prizm-fx-btn');
       prizm.routeTap = prizm.fxRack.output;   // → looper records the FX'd signal
-      choppah.fxRack = attachInstrumentFx(choppah.out, 'choppah-fx', 'choppah-fx-btn');
-      choppah.routeTap = choppah.fxRack.output;
 
       powerMsg('Requesting microphone access — answer the browser prompt…');
       try {
@@ -108,9 +84,7 @@
     }
 
     await populateInputs();
-    populateMidiOutputs(midiOk);
     wireTopbar();
-    wireMidi();
     wireKeyboard();
 
     $('comp-input').value = Math.round(engine.compFrames / engine.ctx.sampleRate * 1000);
@@ -123,11 +97,8 @@
     addChannel();
     addChannel();
     var inMode = engine.inputChannels >= 2 ? 'stereo in' : 'mono in';
-    status(midiOk ? 'Ready (' + inMode + '). Pick a MIDI clock output, hit a loop button.' :
-      'Ready (' + inMode + '; Web MIDI unavailable — clock out and MIDI learn disabled).');
+    status('Ready (' + inMode + ').');
     requestAnimationFrame(beatLoop);
-    setInterval(midiLoopPump, 25);
-    setInterval(autoEndWatch, 100);
     setInterval(function () { drums.pump(); bass.pump(); }, 25);
     setInterval(automationLoopPump, 30);
     if (window.FXAutomationTargets) {
@@ -151,18 +122,6 @@
         sel.appendChild(opt);
       });
     } catch (e) {}
-  }
-
-  function populateMidiOutputs(midiOk) {
-    var sel = $('midiout-select');
-    while (sel.options.length > 1) sel.remove(1);
-    if (!midiOk) { sel.disabled = true; return; }
-    midi.getOutputs().forEach(function (o) {
-      var opt = document.createElement('option');
-      opt.value = o.id;
-      opt.textContent = o.name;
-      sel.appendChild(opt);
-    });
   }
 
   function wireTopbar() {
@@ -204,11 +163,6 @@
       if (isFinite(v) && v >= 0) engine.setComp(v);
     });
 
-    $('autoend-input').addEventListener('change', function () {
-      var v = parseFloat(this.value);
-      if (isFinite(v) && v >= 0.3) engine.autoEndSec = v;
-    });
-
     $('calibrate-btn').addEventListener('click', function () {
       var btn = this;
       if (btn.disabled) return;
@@ -232,12 +186,6 @@
         status('Calibrated: round-trip latency ' + ms + ' ms (Comp set)' +
           (spread > 3 ? ' — readings varied ±' + Math.round(spread / 2) + ' ms, re-run for a tighter result.' : '.'));
       });
-    });
-
-    $('midiout-select').addEventListener('change', function () {
-      midi.setOutput(this.value);
-      status(this.value ? 'MIDI clock output: ' + this.options[this.selectedIndex].text : 'MIDI clock output off.');
-      if (engine.transport.running && this.value) midi.startClock(engine.transport.origin);
     });
 
     $('playall-btn').addEventListener('click', wrapMappable(function () {
@@ -281,7 +229,6 @@
     $('reset-btn').addEventListener('click', function () {
       if (window.SongArranger && window.SongArranger.isPlaying()) window.SongArranger.stop();
       engine.resetAll();
-      midi.stopClock();
       if (drums) {
         drums.enabled = false;
         $('drums-toggle').classList.remove('active');
@@ -292,7 +239,6 @@
         $('bass-toggle').classList.remove('active');
       }
       if (prizm) prizm.allOff();
-      if (choppah) choppah.allOff();
       autoLoopsRun = false;
       autoLoopsStartFrame = 0;
       autoStrips.forEach(function (s) { s.root.remove(); });
@@ -303,27 +249,13 @@
       strips.forEach(function (s) { refreshStrip(s); });
     });
 
-    $('midi-learn-btn').addEventListener('click', function () {
-      document.body.classList.toggle('learn-mode');
-      this.classList.toggle('active');
-      if (!document.body.classList.contains('learn-mode')) {
-        midi.disarm();
-        clearArmed();
-        status('MIDI learn off.');
-      } else {
-        status('MIDI learn: click a control, then press/turn something on your controller.');
-      }
-    });
-
     engine.onTransportStart = function (originFrame) {
       $('bpm-input').disabled = true;
-      midi.startClock(originFrame);
     };
     engine.onTempoLocked = function (bpm, originFrame) {
       $('bpm-input').value = bpm;
       $('bpm-input').disabled = true;
-      midi.startClock(originFrame);
-      status('First loop closed — tempo locked to ' + bpm + ' BPM, MIDI clock started.');
+      status('First loop closed — tempo locked to ' + bpm + ' BPM.');
     };
   }
 
@@ -339,7 +271,6 @@
         t.startAt(f);
         t.tempoLocked = true;
         $('bpm-input').disabled = true;
-        midi.startClock(f);
         status('Drums started the clock at ' + t.bpm + ' BPM.');
       } else {
         status('Drums on.');
@@ -399,7 +330,6 @@
         t.startAt(f);
         t.tempoLocked = true;
         $('bpm-input').disabled = true;
-        midi.startClock(f);
         status('303 started the clock at ' + t.bpm + ' BPM.');
       } else {
         status('303 on.');
@@ -516,7 +446,6 @@
         out = out.concat(drums.fxRack.songAutomationTracks('DRUMS'));
         out = out.concat(bass.fxRack.songAutomationTracks('303'));
         out = out.concat(prizm.fxRack.songAutomationTracks('PRIZM'));
-        out = out.concat(choppah.fxRack.songAutomationTracks('CHOPPAH'));
         return out;
       },
       setDrums: setDrumsOn,
@@ -540,10 +469,6 @@
     $('prizm-btn').addEventListener('click', function () {
       $('prizm-panel').classList.toggle('hidden');
     });
-    $('prizm-midi-in').addEventListener('change', function () {
-      prizm.midiIn = this.checked;
-      if (!this.checked) prizm.allOff();
-    });
     $('prizm-to-looper').addEventListener('change', function () {
       prizm.setLoopRoute(this.checked);
       status(this.checked ?
@@ -555,53 +480,12 @@
     });
   }
 
-  /* ---------------- CHOPPAH sample chopper ---------------- */
-  function wireChoppah() {
-    $('choppah-btn').addEventListener('click', function () {
-      var hidden = $('choppah-panel').classList.toggle('hidden');
-      if (!hidden && choppah.selCanvas) {   // re-fit the canvas now that it has width
-        choppah.selCanvas.width = choppah.selCanvas.clientWidth || 900;
-        choppah.drawSel();
-      }
-    });
-    $('choppah-midi-in').addEventListener('change', function () {
-      choppah.midiIn = this.checked;
-      if (!this.checked) choppah.allOff();
-    });
-    $('choppah-to-looper').addEventListener('change', function () {
-      choppah.setLoopRoute(this.checked);
-      status(this.checked ?
-        'CHOPPAH routed into the loop input bus — loop channels now record it.' :
-        'CHOPPAH plays to the master output only.');
-    });
-    $('choppah-vol').addEventListener('input', function () {
-      choppah.setVolume(parseFloat(this.value));
-    });
-  }
-
-  /* Grab a recorded loop's audio and load it into CHOPPAH as a sample to chop. */
-  function sendToChoppah(ch, n) {
-    if (!choppah) { status('CHOPPAH unavailable.'); return; }
-    ch.requestSnapshot().then(function (snap) {
-      if (!snap.len || !snap.bufL) { status('Loop ' + n + ' has no audio to chop yet.'); return; }
-      choppah.loadBuffers(new Float32Array(snap.bufL), new Float32Array(snap.bufR),
-        engine.ctx.sampleRate, 'loop ' + n);
-      $('choppah-panel').classList.remove('hidden');
-      if (choppah.selCanvas) {
-        choppah.selCanvas.width = choppah.selCanvas.clientWidth || 900;
-        choppah.drawSel();
-      }
-      status('Loop ' + n + ' sent to CHOPPAH (' + choppah.slices.length + ' slices) — chop it in the CHOP panel.');
-    });
-  }
-
   /* ---------------- stop all / play all (loops + 808 + 303) ---------------- */
   function stopEverything() {
     if (window.SongArranger && window.SongArranger.isPlaying()) window.SongArranger.stop();
     autoLoopsRun = false;
     autoLoopsStartFrame = 0;
     engine.stopAll();
-    midi.sendStop();
     if (drums.enabled) {
       drums.enabled = false;
       $('drums-toggle').classList.remove('active');
@@ -639,7 +523,6 @@
       t.startAt(f);
       t.tempoLocked = true;
       $('bpm-input').disabled = true;
-      midi.startClock(f);
     } else {
       f = t.nextBoundary('bar');
     }
@@ -667,226 +550,13 @@
     status('Playing ' + started.join(' + ') + (waitMs > 100 ? ' together at the next bar.' : ' together.'));
   }
 
-  /* ---------------- MIDI learn plumbing ---------------- */
-  function clearArmed() {
-    document.querySelectorAll('.learn-armed').forEach(function (el) {
-      el.classList.remove('learn-armed');
-    });
-  }
-
-  /* In learn mode, clicking a mappable control arms it instead of triggering it. */
+  /* Keep mappable wrappers as pass-through now that learn mode is removed. */
   function wrapMappable(handler) {
     return function (ev) {
-      if (document.body.classList.contains('learn-mode')) {
-        var el = ev.currentTarget;
-        var actionId = el.getAttribute('data-mappable');
-        if (actionId) {
-          clearArmed();
-          el.classList.add('learn-armed');
-          midi.arm(actionId);
-          status('Armed "' + actionId + '" — send a MIDI note or CC to bind.');
-        }
-        ev.preventDefault();
-        ev.stopPropagation();
-        return;
-      }
       handler.call(this, ev);
     };
   }
-
-  function wireMidi() {
-    midi.onLearned = function (key, actionId) {
-      clearArmed();
-      status('Bound ' + key + ' → ' + actionId + '.');
-    };
-    midi.onClockState = function (on) {
-      $('clock-led').classList.toggle('on', on);
-    };
-    midi.dispatch = function (actionId, value) {
-      var parts = actionId.split(':');
-      if (parts[0] === 'global') {
-        if (parts[1] === 'stopAll') stopEverything();
-        else if (parts[1] === 'addChannel') addChannel();
-        else if (parts[1] === 'drums') toggleDrums();
-        else if (parts[1] === 'bass') toggleBass();
-        else if (parts[1] === 'playAll') playEverything();
-        else if (parts[1] === 'exportLoops') {
-          window.LoopExport.exportLoops(engine, strips, status).catch(function (e) {
-            status('Export failed: ' + e.message);
-          });
-        }
-        return;
-      }
-      var idx = parseInt(parts[1], 10) - 1;
-      var ch = engine.channels[idx];
-      if (!ch) return;
-      switch (parts[2]) {
-        case 'main': ch.mainAction(); break;
-        case 'stop': ch.stop(); break;
-        case 'clear': ch.clear(); break;
-        case 'undo': ch.undo(); break;
-        case 'arm':
-          ch.armed = !ch.armed;
-          if (strips[idx]) refreshStrip(strips[idx]);
-          break;
-        case 'auto':
-          ch.autoEnd = !ch.autoEnd;
-          if (strips[idx]) refreshStrip(strips[idx]);
-          break;
-        case 'vol':
-          if (value !== null) {
-            ch.setVolume(value * 1.5);
-            var strip = strips[idx];
-            if (strip) strip.els.vol.value = value * 1.5;
-          }
-          break;
-      }
-    };
-
-    /* Performance MIDI (unmapped notes/CCs): arm-trigger + per-channel capture. */
-    midi.onRaw = function (data, timeStamp) {
-      var frame = engine.perfToFrame(timeStamp) - engine.compFrames;
-      var isNoteOn = (data[0] & 0xF0) === 0x90 && data[2] > 0;
-      var hiP = data[0] & 0xF0;
-      if (prizm && prizm.midiIn) {
-        if (isNoteOn) prizm.noteOn(data[1], data[2] / 127);
-        else if (hiP === 0x80 || hiP === 0x90) prizm.noteOff(data[1]);
-        else if (hiP === 0xB0 && data[1] === 123) prizm.allOff();
-      }
-      if (choppah && choppah.midiIn) {
-        if (isNoteOn) choppah.noteOn(data[1], data[2] / 127);
-        else if (hiP === 0x80 || hiP === 0x90) choppah.noteOff(data[1]);
-        else if (hiP === 0xB0 && data[1] === 123) choppah.allOff();
-      }
-      // step recording in an open sequencer consumes notes (skip arm-trigger/capture)
-      if (window.MidiSequencer && window.MidiSequencer.handleMidi(data)) return;
-      if (isNoteOn) {
-        strips.forEach(function (s, i) {
-          var c = s.ch;
-          if (c.armed && c.state === 'empty' && !c.pendingAction) {
-            c.armed = false;
-            c.mainAction();
-            status('MIDI note triggered recording on loop ' + (i + 1) + '.');
-          }
-        });
-      }
-      engine.channels.forEach(function (c) {
-        if (c.state === 'recording' || c.pendingAction === 'record') {
-          c.lastMidiAbs = frame;
-          if (isNoteOn) { c.lastNoteOnAbs = frame; c.sawNote = true; }
-        }
-        c.captureMidi(data, frame);
-      });
-    };
-  }
-
-  /* AUTO-END: while recording, close the loop once MIDI input has been silent for
-     the configured time. The close is retroactive — the loop ends at the last note
-     (rounded up to the quantize grid when a tempo grid exists), silence trimmed. */
-  function autoEndWatch() {
-    if (!engine.ctx) return;
-    var sr = engine.ctx.sampleRate;
-    var nowF = engine.ctx.currentTime * sr;
-    var idleFrames = engine.autoEndSec * sr;
-    strips.forEach(function (s, i) {
-      var ch = s.ch;
-      if (!ch.autoEnd || ch.state !== 'recording' || ch.pendingAction === 'close') return;
-      if (!ch.sawNote || nowF - ch.lastMidiAbs < idleFrames) return;
-      var t = engine.transport;
-      var len;
-      var q = engine.effQuantize(ch);
-      if (t.tempoLocked && q !== 'off') {
-        var unit = q === 'beat' ? t.beatFrames() : t.barFrames();
-        len = Math.ceil((ch.lastNoteOnAbs - ch.anchorFrame + 0.03 * sr) / unit) * unit;
-      } else {
-        len = ch.lastMidiAbs - ch.anchorFrame;
-      }
-      if (len < 0.2 * sr) return;
-      ch.closeWithLength(len);
-      status('Loop ' + (i + 1) + ' auto-closed after MIDI silence.');
-    });
-  }
-
-  /* ---------------- MIDI loop playback ----------------
-     Look-ahead scheduler: sends each channel's captured events to the MIDI output,
-     repeating every loop cycle, phase-locked via the channel's anchor frame. */
-  function flushNotes(ch) {
-    var synth = internalSynthFor(ch.midiTarget);
-    if (synth) { synth.allOff(); return; }
-    if (!midi || !midi.output) return;
-    ch.usedMidiChannels().forEach(function (c) {
-      midi.output.send([0xB0 | c, 123, 0]);  // all notes off
-      midi.output.send([0xB0 | c, 64, 0]);   // sustain off
-    });
-  }
-
-  /* Pair a channel's note-on/off events into notes (for internal-synth scheduling). */
-  function loopNotePairs(ch) {
-    var open = {}, notes = [];
-    ch.midiEvents.forEach(function (ev) {
-      var hi = ev.data[0] & 0xF0, pitch = ev.data[1];
-      if (hi === 0x90 && ev.data[2] > 0) open[pitch] = { on: ev.off, vel: ev.data[2] };
-      else if ((hi === 0x80 || hi === 0x90) && open[pitch] !== undefined) {
-        notes.push({ on: open[pitch].on, off: ev.off, pitch: pitch, vel: open[pitch].vel });
-        delete open[pitch];
-      }
-    });
-    Object.keys(open).forEach(function (p) {   // still-open: close at loop end
-      notes.push({ on: open[p].on, off: ch.lenFrames, pitch: parseInt(p, 10), vel: open[p].vel });
-    });
-    return notes;
-  }
-
-  function midiLoopPump() {
-    if (!engine.ctx) return;
-    var sr = engine.ctx.sampleRate;
-    var nowF = engine.ctx.currentTime * sr;
-    var horizon = nowF + 0.2 * sr;
-    strips.forEach(function (s) {
-      var ch = s.ch;
-      var synth = internalSynthFor(ch.midiTarget);
-      var internal = !!synth;
-      var sink = internal ? synth : (midi && midi.output);
-      var active = (ch.state === 'playing' || ch.state === 'overdubbing') &&
-        ch.lenFrames > 0 && ch.midiEvents.length > 0 && sink && !ch.midiMute;
-      if (!active) {
-        if (ch.schedFrom !== null) { flushNotes(ch); ch.schedFrom = null; }
-        return;
-      }
-      var from = (ch.schedFrom === null || ch.schedFrom < nowF) ? nowF : ch.schedFrom;
-      var anchor = ch.anchorFrame, len = ch.lenFrames;
-      if (internal) {
-        // schedule in onset order so control notes latch before their pitch notes
-        loopNotePairs(ch).sort(function (a, b) { return a.on - b.on; }).forEach(function (n) {
-          var pitch = Math.max(0, Math.min(127, n.pitch + (ch.transpose || 0)));
-          var dur = n.off - n.on; if (dur <= 0) dur += len;
-          var k = Math.floor((from - anchor - n.on) / len) + 1;
-          var f = anchor + n.on + k * len;
-          while (f <= horizon) {
-            synth.playScheduled(pitch, n.vel / 127, f / sr, (f + dur) / sr);
-            f += len;
-          }
-        });
-      } else {
-        ch.midiEvents.forEach(function (ev) {
-          var data = ev.data;
-          if (ch.transpose) {
-            var hi = data[0] & 0xF0;
-            if (hi === 0x90 || hi === 0x80) {
-              data = [data[0], Math.max(0, Math.min(127, data[1] + ch.transpose)), data[2]];
-            }
-          }
-          var k = Math.floor((from - anchor - ev.off) / len) + 1;
-          var f = anchor + ev.off + k * len;
-          while (f <= horizon) {
-            midi.output.send(data, Math.max(performance.now(), engine.frameToPerf(f)));
-            f += len;
-          }
-        });
-      }
-      ch.schedFrom = horizon;
-    });
-  }
+  function flushNotes() {}
 
   /* ---------------- keyboard ---------------- */
   function wireKeyboard() {
@@ -948,8 +618,6 @@
       s.els.clearBtn.setAttribute('data-mappable', 'ch:' + n + ':clear');
       s.els.undoBtn.setAttribute('data-mappable', 'ch:' + n + ':undo');
       s.els.vol.setAttribute('data-mappable', 'ch:' + n + ':vol');
-      s.els.armBtn.setAttribute('data-mappable', 'ch:' + n + ':arm');
-      s.els.autoBtn.setAttribute('data-mappable', 'ch:' + n + ':auto');
     });
   }
 
@@ -981,7 +649,6 @@
     t.startAt(f);
     t.tempoLocked = true;
     $('bpm-input').disabled = true;
-    midi.startClock(f);
   }
   function samplePoints(pts, ph) {
     var n = pts.length;
@@ -1014,7 +681,7 @@
   }
   function sliderLabel(el) {
     if (el.id) return '[UI] ' + el.id;
-    var row = el.closest('.tb-group,.drum-head,.ch-vol,.pz-ctl,.fx-param,.editor-row,.seq-l');
+    var row = el.closest('.tb-group,.drum-head,.ch-vol,.pz-ctl,.fx-param,.editor-row');
     if (row) {
       var lb = row.querySelector('label');
       if (lb && lb.textContent) return '[UI] ' + lb.textContent.trim();
@@ -1127,7 +794,7 @@
   function refreshAutomationStrip(s) {
     s.root.dataset.state = s.state;
     s.els.rec.classList.toggle('active', s.state === 'recording');
-    s.els.seq.classList.add('active');
+    s.els.edit.classList.add('active');
     s.els.state.textContent = s.state === 'recording' ? 'REC' : (s.targetId ? 'PLAY' : 'NO TARGET');
   }
   function removeAutomationLoop(s) {
@@ -1149,10 +816,10 @@
       '</div>' +
       '<div class="ch-buttons">' +
         '<button class="a-rec" title="Arm record: starts transport and captures slider movement until idle">REC</button>' +
-        '<button class="a-seq active" title="Sequence editor (always editable)">SEQ</button>' +
+        '<button class="a-edit active" title="Editor (always editable)">EDIT</button>' +
       '</div>' +
       '<div class="ch-vol"><label>Target</label><select class="a-target"></select></div>' +
-      '<canvas class="a-seq-canvas" height="64"></canvas>' +
+      '<canvas class="a-edit-canvas" height="64"></canvas>' +
       '<div class="ch-vol"><label>State</label><span class="a-state">NO TARGET</span></div>';
 
     var s = {
@@ -1172,9 +839,9 @@
       els: {
         title: root.querySelector('.ch-title'),
         rec: root.querySelector('.a-rec'),
-        seq: root.querySelector('.a-seq'),
+        edit: root.querySelector('.a-edit'),
         target: root.querySelector('.a-target'),
-        canvas: root.querySelector('.a-seq-canvas'),
+        canvas: root.querySelector('.a-edit-canvas'),
         state: root.querySelector('.a-state')
       }
     };
@@ -1199,8 +866,8 @@
       s.lastMoveWall = Date.now();
       refreshAutomationStrip(s);
     });
-    s.els.seq.addEventListener('click', function () {
-      status('Sequence editor is always active: drag nodes in the lane to edit automation.');
+    s.els.edit.addEventListener('click', function () {
+      status('Automation editor is always active: drag nodes in the lane to edit automation.');
     });
     root.querySelector('.ch-close').addEventListener('click', function () { removeAutomationLoop(s); });
 
@@ -1269,23 +936,10 @@
       '</div>' +
       '<div class="ch-buttons">' +
         '<button class="b-edit" disabled title="Open the waveform editor for this loop">EDIT</button>' +
-        '<button class="b-seq" title="Open the MIDI sequencer — compose a pattern, ⏺ records it into this loop">SEQ</button>' +
-        '<button class="b-slice" disabled title="Chop this loop on the beat grid: rearrange, repeat, reverse or silence slices (plays through the FX chain)">SLICE</button>' +
-      '</div>' +
-      '<div class="ch-buttons">' +
-        '<button class="b-chop" disabled title="Send this loop\'s audio to CHOPPAH as a sample to chop, rearrange and re-pitch">→ CHOP</button>' +
-        '<button class="b-oneshot" title="One-shot: play the loop once and stop instead of looping (applies live and in the song arranger)">1-SHOT</button>' +
-      '</div>' +
-      '<div class="ch-buttons midi-row">' +
-        '<button class="b-arm" title="Start recording on the first incoming MIDI note">ARM</button>' +
-        '<button class="b-auto" title="Auto-close the loop when MIDI input goes silent (trailing silence is trimmed)">AUTO</button>' +
-        '<label class="midi-rec" title="Capture incoming MIDI notes/CCs alongside the audio and loop them to the MIDI output">' +
-          '<input type="checkbox"> ♪ MIDI <span class="midi-count"></span>' +
-        '</label>' +
       '</div>' +
       '<div class="ch-vol"><label>Vol</label><input type="range" min="0" max="1.5" step="0.01" value="1"></div>' +
       '<div class="ch-vol ch-pitch"><label>Pitch</label>' +
-        '<input type="number" min="-24" max="24" step="1" value="0" title="Transpose this loop in semitones — pitch shifts, tempo stays locked (MIDI notes follow)">' +
+        '<input type="number" min="-24" max="24" step="1" value="0" title="Transpose this loop in semitones — pitch shifts, tempo stays locked">' +
         '<span class="unit">st</span></div>' +
       '<div class="fx-section"><div class="fx-rack"></div></div>';
 
@@ -1299,14 +953,6 @@
       undoBtn: root.querySelector('.b-undo'),
       clearBtn: root.querySelector('.b-clear'),
       editBtn: root.querySelector('.b-edit'),
-      seqBtn: root.querySelector('.b-seq'),
-      sliceBtn: root.querySelector('.b-slice'),
-      chopBtn: root.querySelector('.b-chop'),
-      oneshotBtn: root.querySelector('.b-oneshot'),
-      armBtn: root.querySelector('.b-arm'),
-      autoBtn: root.querySelector('.b-auto'),
-      midiChk: root.querySelector('.midi-rec input'),
-      midiCount: root.querySelector('.midi-count'),
       vol: root.querySelector('.ch-vol input'),
       pitch: root.querySelector('.ch-pitch input')
     };
@@ -1322,42 +968,16 @@
     els.editBtn.addEventListener('click', function () {
       window.WaveEditor.open(engine, ch, strips.indexOf(strip) + 1, status);
     });
-    els.seqBtn.addEventListener('click', function () {
-      window.MidiSequencer.open(engine, midi, ch, strips.indexOf(strip) + 1, status);
-    });
-    els.sliceBtn.addEventListener('click', function () {
-      window.BeatSlicer.open(engine, ch, strips.indexOf(strip) + 1, status);
-    });
-    els.chopBtn.addEventListener('click', function () {
-      sendToChoppah(ch, strips.indexOf(strip) + 1);
-    });
-    els.oneshotBtn.addEventListener('click', wrapMappable(function () {
-      ch.setOneShot(!ch.oneShot);
-      refreshStrip(strip);
-      status('Loop ' + (strips.indexOf(strip) + 1) + (ch.oneShot ?
-        ' set to one-shot (plays once, then stops).' : ' loops continuously.'));
-    }));
     els.vol.addEventListener('input', function () { ch.setVolume(parseFloat(this.value)); });
     els.vol.addEventListener('click', wrapMappable(function () {}));
     els.pitch.addEventListener('change', function () {
       var st = ch.setTranspose(parseFloat(this.value));
       this.value = st;
-      flushNotes(ch);   // avoid hanging notes: note-offs would land on the new pitch
       status('Loop ' + (strips.indexOf(strip) + 1) + ' transposed ' + (st > 0 ? '+' : '') + st + ' st (tempo unchanged).');
     });
-    els.armBtn.addEventListener('click', wrapMappable(function () {
-      ch.armed = !ch.armed;
-      if (ch.armed && !ch.midiRec) status('Armed — recording starts on the first MIDI note. Tick ♪ MIDI to also capture the notes.');
-      refreshStrip(strip);
-    }));
-    els.midiChk.addEventListener('change', function () { ch.midiRec = this.checked; });
     root.querySelector('.q-select').addEventListener('change', function () {
       ch.quantOverride = this.value;
     });
-    els.autoBtn.addEventListener('click', wrapMappable(function () {
-      ch.autoEnd = !ch.autoEnd;
-      refreshStrip(strip);
-    }));
     root.querySelector('.ch-close').addEventListener('click', function () { removeChannel(strip); });
 
     ch.onUpdate = function () { refreshStrip(strip); };
@@ -1387,16 +1007,9 @@
     strip.root.dataset.state = ch.state;
     strip.root.classList.toggle('pending', !!ch.pendingAction);
     var labelText = ch.pendingAction ? PENDING_LABELS[ch.pendingAction] : STATE_LABELS[ch.state];
-    if (ch.armed && ch.state === 'empty' && !ch.pendingAction) labelText = 'WAITING FOR NOTE';
     strip.els.label.childNodes[0].textContent = labelText;
     strip.els.undoBtn.disabled = !ch.hasUndo;
     strip.els.editBtn.disabled = !(ch.state === 'playing' || ch.state === 'stopped');
-    strip.els.sliceBtn.disabled = strip.els.editBtn.disabled;
-    strip.els.chopBtn.disabled = strip.els.editBtn.disabled;
-    strip.els.oneshotBtn.classList.toggle('active', ch.oneShot);
-    strip.els.armBtn.classList.toggle('active', ch.armed);
-    strip.els.autoBtn.classList.toggle('active', ch.autoEnd);
-    strip.els.midiCount.textContent = ch.midiEvents.length ? '(' + ch.midiEvents.length + ')' : '';
     if (ch.state === 'empty') {
       strip.els.ring.setAttribute('stroke-dashoffset', RING_C);
       strip.els.time.textContent = '';
