@@ -26,7 +26,7 @@ var va=Object.create;var Vr=Object.defineProperty;var xa=Object.getOwnPropertyDe
 /* Offline helper around pitch-shift: repitch a finite Float32 buffer, same length
    (tempo-locked). Feeds the streaming shifter in hop-sized chunks, flushes, and
    trims the structural latency (calibrated once per sample rate). Exposed as
-   window.PitchShift for CHOPPAH and the loop transpose. */
+   window.PitchShift for loop transpose. */
 (function () {
   var G = typeof window !== 'undefined' ? window : globalThis;
   var PS = G.pitchShift, FRAME = 2048, HOP = 512, delayCache = {};

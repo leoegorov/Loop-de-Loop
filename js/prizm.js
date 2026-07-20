@@ -5,7 +5,7 @@
      ray k amplitude  = (1/(k+1))^(1-tilt), normalized
    Two refractors (A/B) → lowpass "Aperture" → compressor → out.
    Playable via on-screen keys, computer keys (while the panel is open),
-   and incoming MIDI notes; optionally routed into the loop input bus. */
+   and optional routing into the loop input bus. */
 (function () {
   'use strict';
 
@@ -20,7 +20,7 @@
 
   var cutoffHz = function (v) { return 40 * Math.pow(16000 / 40, v / 100); };
   var timeVal = function (v, max) { return 0.002 + Math.pow(v / 100, 2) * max; };
-  var midiHz = function (m) { return 440 * Math.pow(2, (m - 69) / 12); };
+  var noteHz = function (m) { return 440 * Math.pow(2, (m - 69) / 12); };
   var isBlack = function (m) { return [1, 3, 6, 8, 10].indexOf(m % 12) >= 0; };
 
   function rayFreq(base, k, n) { return base * Math.pow(k + 1, n); }
@@ -53,8 +53,7 @@
     this.comp.connect(this.out);
     this.out.connect(engine.masterGain);
     this.loopDelay = null;      // → looper routing (comp-delay so recordings land on grid)
-    this.midiIn = true;
-    this.voices = new Map();
+        this.voices = new Map();
     this.releasing = [];
     this.octBase = 48;          // C3
     this.panel = null;
@@ -99,14 +98,14 @@
   };
 
   /* ---------------- voices ---------------- */
-  Prizm.prototype.noteOn = function (midiNote, vel) {
+  Prizm.prototype.noteOn = function (noteId, vel) {
     var ctx = this.engine.ctx;
-    if (this.voices.has(midiNote)) return;
+    if (this.voices.has(noteId)) return;
     if (this.voices.size >= MAX_VOICES) {
       this.killVoice(this.voices.keys().next().value);
     }
     var t = ctx.currentTime;
-    var freq = midiHz(midiNote);
+    var freq = noteHz(noteId);
     var env = ctx.createGain();
     env.gain.value = 0;
     env.connect(this.filter);
@@ -144,15 +143,15 @@
     env.gain.linearRampToValueAtTime(peak, t + a);
     env.gain.setTargetAtTime(s * peak, t + a, Math.max(d / 3, 0.005));
 
-    this.voices.set(midiNote, voice);
-    this.paintKey(midiNote, true);
+    this.voices.set(noteId, voice);
+    this.paintKey(noteId, true);
   };
 
   /* Build one scheduled note (ray banks + envelope at explicit audio times) into
      `dest` on `ctx`. Shared by live sequenced playback and offline rendering.
      Returns { env, stopAt } — stopAt is when the release tail's oscillators end. */
-  function buildScheduledNote(ctx, dest, params, midiNote, vel, onT, offT) {
-    var freq = midiHz(midiNote);
+  function buildScheduledNote(ctx, dest, params, noteId, vel, onT, offT) {
+    var freq = noteHz(noteId);
     var env = ctx.createGain();
     env.gain.value = 0;
     env.connect(dest);
@@ -191,9 +190,9 @@
 
   /* Fire-and-forget scheduled note for sequenced/looped internal playback,
      independent of the live-keyboard voice map; cleans itself up. */
-  Prizm.prototype.playScheduled = function (midiNote, vel, onT, offT) {
+  Prizm.prototype.playScheduled = function (noteId, vel, onT, offT) {
     var ctx = this.engine.ctx;
-    var n = buildScheduledNote(ctx, this.filter, this.params, midiNote, vel, onT, offT);
+    var n = buildScheduledNote(ctx, this.filter, this.params, noteId, vel, onT, offT);
     setTimeout(function () { try { n.env.disconnect(); } catch (e) {} },
       Math.max(50, (n.stopAt - ctx.currentTime) * 1000 + 200));
   };
@@ -282,24 +281,24 @@
     });
   };
 
-  Prizm.prototype.noteOff = function (midiNote) {
-    var v = this.voices.get(midiNote);
+  Prizm.prototype.noteOff = function (noteId) {
+    var v = this.voices.get(noteId);
     if (!v) return;
     var ctx = this.engine.ctx;
     var t = ctx.currentTime, r = timeVal(this.params.rel, 5);
     v.env.gain.cancelScheduledValues(t);
     v.env.gain.setValueAtTime(v.env.gain.value, t);
     v.env.gain.setTargetAtTime(0, t, Math.max(r / 4, 0.008));
-    this.voices.delete(midiNote);
+    this.voices.delete(noteId);
     this.releasing.push(v);
-    this.paintKey(midiNote, false);
+    this.paintKey(noteId, false);
   };
 
-  Prizm.prototype.killVoice = function (midiNote) {
-    var v = this.voices.get(midiNote);
+  Prizm.prototype.killVoice = function (noteId) {
+    var v = this.voices.get(noteId);
     if (!v) return;
-    this.voices.delete(midiNote);
-    this.paintKey(midiNote, false);
+    this.voices.delete(noteId);
+    this.paintKey(noteId, false);
     var t = this.engine.ctx.currentTime;
     v.env.gain.cancelScheduledValues(t);
     v.env.gain.setTargetAtTime(0, t, 0.01);
@@ -539,9 +538,9 @@
     this.octLabel.textContent = NOTE_NAMES[this.octBase % 12] + (Math.floor(this.octBase / 12) - 1);
   };
 
-  Prizm.prototype.paintKey = function (midiNote, on) {
+  Prizm.prototype.paintKey = function (noteId, on) {
     if (!this.keysEl) return;
-    var el = this.keysEl.querySelector('[data-note="' + midiNote + '"]');
+    var el = this.keysEl.querySelector('[data-note="' + noteId + '"]');
     if (el) el.classList.toggle('held', on);
   };
 

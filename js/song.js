@@ -416,7 +416,7 @@
     autoTimer = setInterval(autoTick, AUTO_MS);
   }
 
-  /* Schedule the loop-audio gates for one pass; re-armed each pass while looping. */
+  /* Schedule the loop-audio gates for one pass; refreshed each pass while looping. */
   function armLoopPass(sf) {
     var bf = ctx.engine.transport.barFrames();
     tracks.forEach(function (t) {

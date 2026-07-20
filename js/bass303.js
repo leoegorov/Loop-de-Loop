@@ -8,7 +8,7 @@
   var NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
   function noteName(p) { return NOTE_NAMES[p % 12] + (Math.floor(p / 12) - 1); }
-  function midiFreq(p) { return 440 * Math.pow(2, (p - 69) / 12); }
+  function noteFreq(p) { return 440 * Math.pow(2, (p - 69) / 12); }
 
   function Bass303(engine) {
     this.engine = engine;
@@ -103,7 +103,7 @@
   /* ---- voice scheduling ---- */
   Bass303.prototype.trigger = function (t, dur, st, prev, next) {
     var f = this.filter.frequency, g = this.vca.gain, o = this.osc.frequency;
-    var freq = midiFreq(st.pitch);
+    var freq = noteFreq(st.pitch);
     var slidInto = prev && prev.pitch !== null && prev.slide;
     var level = st.acc ? 1.0 : 0.65;
 
