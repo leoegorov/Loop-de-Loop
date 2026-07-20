@@ -265,6 +265,34 @@ body {
   border: 1px solid var(--edge); border-radius: 6px; cursor: pointer; background: #14161a;
 }
 .chop-hint { font-size: 0.68rem; color: var(--dim); }
+.chop-kbd { background: var(--panel-2); border: 1px solid var(--edge); border-radius: 8px; padding: 0.4rem 0.6rem; }
+.chop-kbd-top {
+  display: flex; justify-content: space-between; font-size: 0.62rem;
+  letter-spacing: 0.04em; margin-bottom: 0.35rem;
+}
+.chop-zone-ctrl { color: var(--od); }
+.chop-zone-pitch { color: var(--accent); }
+.chop-keys { position: relative; height: 84px; display: flex; border-radius: 6px; overflow: hidden; }
+.chop-key {
+  flex: 1; border: 1px solid #11131f; border-radius: 0 0 5px 5px;
+  cursor: pointer; position: relative;
+}
+.chop-key.ctrl { background: linear-gradient(#ffe1b0, #ffca7a); }
+.chop-key.pitch { background: linear-gradient(#cfe0ff, #a9c8f5); }
+.chop-key.black {
+  position: absolute; height: 58%; z-index: 2;
+  border: 1px solid #000; border-radius: 0 0 4px 4px;
+}
+.chop-key.ctrl.black { background: linear-gradient(#7a4a10, #3a2405); }
+.chop-key.pitch.black { background: linear-gradient(#1f3350, #0a1626); }
+.chop-key.off { opacity: 0.3; cursor: default; }
+.chop-key.held { filter: brightness(1.12); box-shadow: inset 0 0 0 2px var(--od); }
+.chop-key.active { box-shadow: inset 0 0 0 2px var(--od); }
+.chop-key .kc {
+  position: absolute; bottom: 3px; left: 0; right: 0; text-align: center;
+  font-size: 0.56rem; font-weight: 600; color: #3a3f52; pointer-events: none;
+}
+.chop-key.black .kc { color: #cfd3e0; bottom: 2px; }
 .pz-grid {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 0.6rem;

@@ -15,6 +15,9 @@
   var SPLIT = 60;        // C4: notes below = control/trigger, at/above = pitch
   var CTRL_BASE = 12;    // C0 maps to slice 0 in the control zone
   var EDGE = 0.003;      // slice edge fade (s) against clicks
+  var KB_LOW = 12, KB_HIGH = 84;   // on-screen keyboard span: C0..C6
+  var NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  function isBlack(m) { return [1, 3, 6, 8, 10].indexOf(m % 12) >= 0; }
 
   function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 
@@ -67,6 +70,7 @@
     this.panel = null;
     this.uiRoot = null;
     this.selCanvas = null;
+    this.keysEl = null;
   }
 
   /* ---------------- slicing ---------------- */
@@ -82,6 +86,7 @@
     this.slices = out;
     this.activeSlice = 0;
     this.drawSel();
+    this.buildKeyboard();
   };
 
   /* Energy-based transient detection: slice at points where short-window RMS
@@ -116,6 +121,7 @@
     this.slices = out;
     this.activeSlice = 0;
     this.drawSel();
+    this.buildKeyboard();
   };
 
   /* ---------------- loading ---------------- */
@@ -218,13 +224,23 @@
     if (!this.hasSample()) return;
     var ctx = this.engine.ctx, t = ctx.currentTime + 0.005;
     var r = this.resolve(midiNote, this.activeSlice);
-    if (r.control) { this.activeSlice = r.slice; this.drawSel(); }
+    if (r.control) { this.activeSlice = r.slice; this.drawSel(); this.refreshKeyState(); }
     if (this.voices.has(midiNote)) this.killVoice(midiNote);
     var v = this.spawn(ctx, this.out, r.slice, r.rate, t, null, vel);
-    if (v) this.voices.set(midiNote, v);
+    if (v) {
+      this.voices.set(midiNote, v);
+      var self = this;
+      v.src.onended = function () {           // free + unpaint when the slice finishes
+        if (self.voices.get(midiNote) === v) self.voices.delete(midiNote);
+        self.paintKey(midiNote, false);
+      };
+    }
+    this.paintKey(midiNote, true);
   };
 
   Choppah.prototype.noteOff = function (midiNote) {
+    // control-zone triggers are one-shots — they ring out the whole slice
+    if (midiNote < SPLIT) return;
     var v = this.voices.get(midiNote);
     if (!v) return;
     this.voices.delete(midiNote);
@@ -235,6 +251,7 @@
       v.env.gain.linearRampToValueAtTime(0, t + 0.02);
       v.src.stop(t + 0.05);
     } catch (e) {}
+    this.paintKey(midiNote, false);
   };
 
   Choppah.prototype.killVoice = function (midiNote) {
@@ -242,6 +259,7 @@
     if (!v) return;
     this.voices.delete(midiNote);
     try { v.src.stop(); } catch (e) {}
+    this.paintKey(midiNote, false);
   };
 
   Choppah.prototype.allOff = function () {
@@ -342,7 +360,14 @@
         '<label class="chk chop-lock" title="Pitch-shift the slice without changing its length (granular time-stretch)"><input type="checkbox" class="chop-lock-in"> tempo-lock pitch</label>' +
       '</div>' +
       '<canvas class="chop-canvas" height="150"></canvas>' +
-      '<div class="chop-hint">below C4 = trigger slices (rearrange) · C4 and up = re-pitch the last-triggered slice · tempo-lock keeps slice length · click a slice to audition</div>';
+      '<div class="chop-kbd">' +
+        '<div class="chop-kbd-top">' +
+          '<span class="chop-zone-ctrl">CONTROL — trigger slices</span>' +
+          '<span class="chop-zone-pitch">C4+ PITCH — re-pitch active slice</span>' +
+        '</div>' +
+        '<div class="chop-keys"></div>' +
+      '</div>' +
+      '<div class="chop-hint">below C4 = trigger slices (rearrange, one-shot) · C4 and up = re-pitch the last-triggered slice · tempo-lock keeps slice length · click a slice to audition</div>';
 
     var rootSel = uiRoot.querySelector('.chop-root');
     var names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -388,7 +413,35 @@
       var ctx = self.engine.ctx, t = ctx.currentTime + 0.005;
       self.spawn(ctx, self.out, idx, 1, t, null, 0.9);
       self.drawSel();
+      self.refreshKeyState();
     });
+
+    // split keyboard: click/drag to play; control keys trigger slices, pitch keys re-pitch
+    this.keysEl = uiRoot.querySelector('.chop-keys');
+    this.buildKeyboard();
+    var pointerNote = null;
+    function press(note) {
+      if (pointerNote === note) return;
+      if (pointerNote !== null) self.noteOff(pointerNote);
+      self.noteOn(note, 0.85);
+      pointerNote = note;
+    }
+    this.keysEl.addEventListener('pointerdown', function (e) {
+      var k = e.target.closest('.chop-key');
+      if (!k || k.classList.contains('off')) return;
+      e.preventDefault();
+      press(+k.dataset.note);
+    });
+    this.keysEl.addEventListener('pointerover', function (e) {
+      if (pointerNote === null) return;
+      var k = e.target.closest('.chop-key');
+      if (!k || k.classList.contains('off')) return;
+      press(+k.dataset.note);
+    });
+    window.addEventListener('pointerup', function () {
+      if (pointerNote !== null) { self.noteOff(pointerNote); pointerNote = null; }
+    });
+
     setTimeout(function () { self.drawSel(); }, 0);
   };
 
@@ -432,6 +485,62 @@
       g.font = '9px sans-serif';
       g.fillText(String(s + 1), x0 + 3, 10);
     }
+  };
+
+  /* Split keyboard: control keys (below C4) are labelled with the slice they
+     trigger (C0 up = slice 1, 2, 3 …); pitch keys (C4+) show octave C labels.
+     Control keys past the slice count are dimmed and unplayable. */
+  Choppah.prototype.buildKeyboard = function () {
+    var el = this.keysEl;
+    if (!el) return;
+    el.innerHTML = '';
+    var self = this, whites = [], m;
+    for (m = KB_LOW; m <= KB_HIGH; m++) if (!isBlack(m)) whites.push(m);
+    var wCount = whites.length, ww = 100 / wCount;
+    function ctrlLabel(note) {
+      var idx = note - CTRL_BASE;
+      return idx < self.slices.length ? String(idx + 1) : null;   // null = no slice
+    }
+    whites.forEach(function (note) {
+      var k = document.createElement('div');
+      var ctrl = note < SPLIT;
+      k.className = 'chop-key ' + (ctrl ? 'ctrl' : 'pitch');
+      k.dataset.note = note;
+      var lab = '';
+      if (ctrl) { var c = ctrlLabel(note); if (c === null) k.className += ' off'; else lab = c; }
+      else if (note % 12 === 0) lab = NOTE_NAMES[note % 12] + (Math.floor(note / 12) - 1);
+      if (lab) k.innerHTML = '<span class="kc">' + lab + '</span>';
+      el.appendChild(k);
+    });
+    var wi = 0;
+    for (m = KB_LOW; m <= KB_HIGH; m++) {
+      if (isBlack(m)) {
+        var b = document.createElement('div');
+        var ctrl2 = m < SPLIT;
+        b.className = 'chop-key black ' + (ctrl2 ? 'ctrl' : 'pitch');
+        b.dataset.note = m;
+        if (ctrl2) { var cl = ctrlLabel(m); if (cl === null) b.className += ' off'; else b.innerHTML = '<span class="kc">' + cl + '</span>'; }
+        b.style.width = (ww * 0.62) + '%';
+        b.style.left = (wi * ww - ww * 0.31) + '%';
+        el.appendChild(b);
+      } else wi++;
+    }
+    this.refreshKeyState();
+  };
+
+  Choppah.prototype.paintKey = function (note, on) {
+    if (!this.keysEl) return;
+    var el = this.keysEl.querySelector('[data-note="' + note + '"]');
+    if (el) el.classList.toggle('held', on);
+  };
+
+  /* Mark the control key of the currently-active slice. */
+  Choppah.prototype.refreshKeyState = function () {
+    if (!this.keysEl) return;
+    var act = this.keysEl.querySelectorAll('.chop-key.active');
+    for (var i = 0; i < act.length; i++) act[i].classList.remove('active');
+    var el = this.keysEl.querySelector('[data-note="' + (CTRL_BASE + this.activeSlice) + '"]');
+    if (el) el.classList.add('active');
   };
 
   window.Choppah = Choppah;
