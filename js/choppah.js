@@ -1,0 +1,382 @@
+/* CHOPPAH — sample chopper / re-pitch instrument (internal engine).
+   Load a sample, chop it into slices, then play it from MIDI with a split
+   keyboard:
+     - CONTROL zone (below the split, default C4): each key triggers one slice
+       at its natural pitch — sequence these to rearrange the sample. The key
+       also latches that slice as the "active" one.
+     - PITCH  zone (at/above the split): plays the active slice re-pitched by
+       playback rate (root note = original speed), so you pitch-shift the chop.
+   Exposes the same interface as PRIZM so it drops into the sequencer's internal
+   target machinery and the loop MIDI pump: out, noteOn/noteOff/allOff,
+   playScheduled, renderPattern, setLoopRoute, setVolume, isOpen, handlesKey. */
+(function () {
+  'use strict';
+
+  var SPLIT = 60;        // C4: notes below = control/trigger, at/above = pitch
+  var CTRL_BASE = 12;    // C0 maps to slice 0 in the control zone
+  var EDGE = 0.003;      // slice edge fade (s) against clicks
+
+  function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+  function Choppah(engine) {
+    var ctx = engine.ctx;
+    this.engine = engine;
+    this.buffer = null;         // decoded AudioBuffer (context-independent)
+    this.sampleName = '';
+    this.slices = [];           // [{ start, end }] in frames
+    this.activeSlice = 0;       // latched by the last control note
+    this.root = SPLIT;          // pitch-zone note that plays at rate 1.0
+    this.gain = 1;
+    this.out = ctx.createGain();
+    this.out.gain.value = 0.9;
+    this.out.connect(engine.masterGain);
+    this.loopDelay = null;
+    this.midiIn = true;
+    this.voices = new Map();     // midiNote -> { src, env }
+    this.schedSel = [];          // sorted [{ t, slice }] for scheduled pitch resolution
+    this.panel = null;
+    this.uiRoot = null;
+    this.selCanvas = null;
+  }
+
+  /* ---------------- slicing ---------------- */
+  Choppah.prototype.hasSample = function () { return !!(this.buffer && this.slices.length); };
+
+  Choppah.prototype.sliceEqual = function (n) {
+    if (!this.buffer) return;
+    n = Math.max(1, Math.min(64, Math.round(n)));
+    var len = this.buffer.length, out = [];
+    for (var i = 0; i < n; i++) {
+      out.push({ start: Math.round(i * len / n), end: Math.round((i + 1) * len / n) });
+    }
+    this.slices = out;
+    this.activeSlice = 0;
+    this.drawSel();
+  };
+
+  /* Energy-based transient detection: slice at points where short-window RMS
+     jumps well above its local trailing average. */
+  Choppah.prototype.sliceTransients = function (sensitivity) {
+    if (!this.buffer) return;
+    var sr = this.buffer.sampleRate;
+    var L = this.buffer.getChannelData(0);
+    var R = this.buffer.numberOfChannels > 1 ? this.buffer.getChannelData(1) : L;
+    var n = L.length;
+    var win = Math.max(64, Math.round(sr * 0.01));      // 10 ms energy window
+    var hop = Math.max(32, Math.round(win / 2));
+    var env = [];
+    for (var i = 0; i < n; i += hop) {
+      var s = 0, e = Math.min(n, i + win);
+      for (var j = i; j < e; j++) { var m = (L[j] + R[j]) * 0.5; s += m * m; }
+      env.push(Math.sqrt(s / Math.max(1, e - i)));
+    }
+    var thr = (sensitivity == null ? 1.6 : sensitivity);  // ratio over trailing avg
+    var minGap = Math.round(sr * 0.05 / hop);             // >=50 ms apart
+    var bounds = [0], avg = env[0] || 1e-6, last = -minGap;
+    for (i = 1; i < env.length; i++) {
+      if (env[i] > avg * thr && env[i] > 0.02 && i - last >= minGap) {
+        bounds.push(i * hop); last = i;
+      }
+      avg = avg * 0.85 + env[i] * 0.15;
+    }
+    var out = [];
+    for (i = 0; i < bounds.length; i++) {
+      out.push({ start: bounds[i], end: i + 1 < bounds.length ? bounds[i + 1] : n });
+    }
+    this.slices = out;
+    this.activeSlice = 0;
+    this.drawSel();
+  };
+
+  /* ---------------- loading ---------------- */
+  Choppah.prototype.loadArrayBuffer = function (arrBuf, name) {
+    var self = this;
+    return this.engine.ctx.decodeAudioData(arrBuf).then(function (buf) {
+      self.buffer = buf;
+      self.sampleName = name || 'sample';
+      self.sliceEqual(8);
+      return buf;
+    });
+  };
+
+  /* ---------------- interface parity ---------------- */
+  Choppah.prototype.isOpen = function () {
+    return !!(this.panel && !this.panel.classList.contains('hidden'));
+  };
+  Choppah.prototype.handlesKey = function () { return false; };
+  Choppah.prototype.setVolume = function (v) {
+    this.out.gain.setTargetAtTime(v, this.engine.ctx.currentTime, 0.01);
+  };
+
+  /* Route the engine into the loop input bus (latency-compensated), like PRIZM. */
+  Choppah.prototype.setLoopRoute = function (on) {
+    var eng = this.engine;
+    if (on && !this.loopDelay) {
+      this.loopDelay = eng.ctx.createDelay(1);
+      this.loopDelay.delayTime.value = eng.compFrames / eng.ctx.sampleRate;
+      this._routeSrc = this.routeTap || this.out;
+      this._routeSrc.connect(this.loopDelay);
+      this.loopDelay.connect(eng.inputNode);
+    } else if (!on && this.loopDelay) {
+      this._routeSrc.disconnect(this.loopDelay);
+      this.loopDelay.disconnect();
+      this.loopDelay = null;
+    }
+  };
+
+  /* Resolve a MIDI note to { slice, rate }. Control notes pick + play a slice at
+     natural pitch; pitch notes play `active` re-pitched. */
+  Choppah.prototype.resolve = function (midiNote, active) {
+    if (midiNote < SPLIT) {
+      var idx = clamp(midiNote - CTRL_BASE, 0, this.slices.length - 1);
+      return { slice: idx, rate: 1, control: true };
+    }
+    return { slice: active, rate: Math.pow(2, (midiNote - this.root) / 12), control: false };
+  };
+
+  /* Build one slice voice into `dest` on `ctx`; returns { src, env, endT }. */
+  Choppah.prototype.spawn = function (ctx, dest, sliceIdx, rate, whenT, gateOffT, vel) {
+    var sl = this.slices[sliceIdx];
+    if (!sl || !this.buffer) return null;
+    var sr = this.buffer.sampleRate;
+    var offset = sl.start / sr;
+    var sliceLen = (sl.end - sl.start) / sr;               // seconds of buffer content
+    var outDur = sliceLen / rate;                          // real-time length after re-pitch
+    var src = ctx.createBufferSource();
+    src.buffer = this.buffer;
+    src.playbackRate.value = rate;
+    var env = ctx.createGain();
+    src.connect(env); env.connect(dest);
+    var peak = 0.2 + 0.8 * (vel == null ? 0.8 : vel);
+    // gate: play the whole slice unless a note-off cuts it short
+    var endT = whenT + outDur;
+    if (gateOffT != null && gateOffT < endT) endT = Math.max(whenT + 0.01, gateOffT);
+    var rel = Math.min(0.02, Math.max(0.004, outDur * 0.1));
+    env.gain.setValueAtTime(0, whenT);
+    env.gain.linearRampToValueAtTime(peak, whenT + EDGE);
+    env.gain.setValueAtTime(peak, Math.max(whenT + EDGE, endT - rel));
+    env.gain.linearRampToValueAtTime(0, endT);
+    try { src.start(whenT, offset, sliceLen); } catch (e) { return null; }
+    try { src.stop(endT + 0.03); } catch (e) {}
+    return { src: src, env: env, endT: endT };
+  };
+
+  /* ---------------- live playing ---------------- */
+  Choppah.prototype.noteOn = function (midiNote, vel) {
+    if (!this.hasSample()) return;
+    var ctx = this.engine.ctx, t = ctx.currentTime + 0.005;
+    var r = this.resolve(midiNote, this.activeSlice);
+    if (r.control) { this.activeSlice = r.slice; this.drawSel(); }
+    if (this.voices.has(midiNote)) this.killVoice(midiNote);
+    var v = this.spawn(ctx, this.out, r.slice, r.rate, t, null, vel);
+    if (v) this.voices.set(midiNote, v);
+  };
+
+  Choppah.prototype.noteOff = function (midiNote) {
+    var v = this.voices.get(midiNote);
+    if (!v) return;
+    this.voices.delete(midiNote);
+    var ctx = this.engine.ctx, t = ctx.currentTime;
+    try {
+      v.env.gain.cancelScheduledValues(t);
+      v.env.gain.setValueAtTime(v.env.gain.value, t);
+      v.env.gain.linearRampToValueAtTime(0, t + 0.02);
+      v.src.stop(t + 0.05);
+    } catch (e) {}
+  };
+
+  Choppah.prototype.killVoice = function (midiNote) {
+    var v = this.voices.get(midiNote);
+    if (!v) return;
+    this.voices.delete(midiNote);
+    try { v.src.stop(); } catch (e) {}
+  };
+
+  Choppah.prototype.allOff = function () {
+    var self = this;
+    Array.from(this.voices.keys()).forEach(function (k) { self.killVoice(k); });
+  };
+
+  /* Fire-and-forget scheduled note for sequenced/looped playback. Control notes
+     latch their slice on a time-sorted timeline so later pitch notes resolve to
+     the right slice regardless of scheduling order. */
+  Choppah.prototype.playScheduled = function (midiNote, vel, onT, offT) {
+    if (!this.hasSample()) return;
+    var ctx = this.engine.ctx;
+    if (midiNote < SPLIT) {
+      var idx = clamp(midiNote - CTRL_BASE, 0, this.slices.length - 1);
+      this.pushSel(onT, idx);
+      this.activeSlice = idx;
+      this.spawn(ctx, this.out, idx, 1, onT, offT, vel);
+    } else {
+      this.spawn(ctx, this.out, this.selAt(onT), Math.pow(2, (midiNote - this.root) / 12), onT, offT, vel);
+    }
+  };
+
+  Choppah.prototype.pushSel = function (t, slice) {
+    var s = this.schedSel, i = s.length;
+    while (i > 0 && s[i - 1].t > t) i--;
+    s.splice(i, 0, { t: t, slice: slice });
+    var cut = this.engine.ctx.currentTime - 1;             // prune stale entries
+    while (s.length && s[0].t < cut) s.shift();
+  };
+  Choppah.prototype.selAt = function (t) {
+    var s = this.schedSel, sel = this.activeSlice;
+    for (var i = 0; i < s.length; i++) { if (s[i].t <= t + 1e-4) sel = s[i].slice; else break; }
+    return sel;
+  };
+
+  /* Render a pattern offline: notes = [{ pitch, vel(0..1), onT, offT }] seconds
+     from loop start; lenSec = loop length. Control/pitch resolved in time order;
+     slice tails past the end fold onto the loop start. Resolves { L, R }. */
+  Choppah.prototype.renderPattern = function (notes, lenSec) {
+    if (!this.hasSample()) {
+      var z = new Float32Array(Math.max(1, Math.round(lenSec * this.engine.ctx.sampleRate)));
+      return Promise.resolve({ L: z, R: new Float32Array(z.length) });
+    }
+    var sr = this.engine.ctx.sampleRate;
+    var lenFrames = Math.round(lenSec * sr);
+    var self = this;
+    var ordered = notes.slice().sort(function (a, b) { return a.onT - b.onT; });
+    // resolve each note to { slice, rate } walking control latches in time order
+    var active = 0, plan = [], maxEnd = lenSec;
+    ordered.forEach(function (n) {
+      var r = self.resolve(n.pitch, active);
+      if (r.control) active = r.slice;
+      var sl = self.slices[r.slice];
+      if (!sl) return;
+      var outDur = ((sl.end - sl.start) / sr) / r.rate;
+      var endT = n.offT != null && n.offT < n.onT + outDur ? Math.max(n.onT + 0.01, n.offT) : n.onT + outDur;
+      if (endT > maxEnd) maxEnd = endT;
+      plan.push({ slice: r.slice, rate: r.rate, onT: n.onT, offT: n.offT, vel: n.vel });
+    });
+    var oc = new OfflineAudioContext(2, Math.ceil(maxEnd * sr) + 64, sr);
+    var out = oc.createGain();
+    out.gain.value = this.out.gain.value;
+    out.connect(oc.destination);
+    plan.forEach(function (p) {
+      self.spawn(oc, out, p.slice, p.rate, p.onT, p.offT, p.vel);
+    });
+    return oc.startRendering().then(function (buf) {
+      var sL = buf.getChannelData(0), sR = buf.numberOfChannels > 1 ? buf.getChannelData(1) : sL;
+      var L = new Float32Array(lenFrames), R = new Float32Array(lenFrames);
+      L.set(sL.subarray(0, lenFrames));
+      R.set(sR.subarray(0, lenFrames));
+      for (var i = lenFrames; i < sL.length; i++) {
+        var w = i % lenFrames;
+        L[w] += sL[i]; R[w] += sR[i];
+      }
+      return { L: L, R: R };
+    });
+  };
+
+  /* ---------------- UI ---------------- */
+  Choppah.prototype.buildUI = function (panelSection, uiRoot) {
+    this.panel = panelSection;
+    this.uiRoot = uiRoot;
+    var self = this;
+    uiRoot.innerHTML =
+      '<div class="chop-row">' +
+        '<button class="chop-load">LOAD SAMPLE</button>' +
+        '<input type="file" class="chop-file" accept="audio/*" style="display:none">' +
+        '<span class="chop-name">no sample</span>' +
+        '<label class="seq-l">Slices <select class="chop-count">' +
+          '<option>2</option><option>4</option><option selected>8</option>' +
+          '<option>16</option><option>24</option><option>32</option></select></label>' +
+        '<button class="chop-detect" title="Slice at detected transients">DETECT</button>' +
+        '<label class="seq-l">Root <select class="chop-root"></select></label>' +
+      '</div>' +
+      '<canvas class="chop-canvas" height="150"></canvas>' +
+      '<div class="chop-hint">below C4 = trigger slices (rearrange) · C4 and up = re-pitch the last-triggered slice · click a slice to audition</div>';
+
+    var rootSel = uiRoot.querySelector('.chop-root');
+    var names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+    for (var m = 48; m <= 72; m++) {
+      var o = document.createElement('option');
+      o.value = m; o.textContent = names[m % 12] + (Math.floor(m / 12) - 1);
+      if (m === SPLIT) o.selected = true;
+      rootSel.appendChild(o);
+    }
+    rootSel.addEventListener('change', function () { self.root = parseInt(this.value, 10); });
+
+    var file = uiRoot.querySelector('.chop-file');
+    uiRoot.querySelector('.chop-load').addEventListener('click', function () { file.click(); });
+    file.addEventListener('change', function () {
+      var f = this.files && this.files[0];
+      if (!f) return;
+      var name = f.name;
+      f.arrayBuffer().then(function (ab) { return self.loadArrayBuffer(ab, name); }).then(function () {
+        uiRoot.querySelector('.chop-name').textContent =
+          self.sampleName + ' · ' + self.buffer.duration.toFixed(2) + 's';
+        self.drawSel();
+      }).catch(function (err) {
+        uiRoot.querySelector('.chop-name').textContent = 'load failed: ' + (err.message || err);
+      });
+      this.value = '';
+    });
+    uiRoot.querySelector('.chop-count').addEventListener('change', function () {
+      self.sliceEqual(parseInt(this.value, 10));
+    });
+    uiRoot.querySelector('.chop-detect').addEventListener('click', function () {
+      self.sliceTransients();
+    });
+
+    this.selCanvas = uiRoot.querySelector('.chop-canvas');
+    var cv = this.selCanvas;
+    cv.addEventListener('mousedown', function (e) {
+      if (!self.hasSample()) return;
+      var rect = cv.getBoundingClientRect();
+      var frac = (e.clientX - rect.left) / rect.width;
+      var idx = clamp(Math.floor(frac * self.slices.length), 0, self.slices.length - 1);
+      self.activeSlice = idx;
+      var ctx = self.engine.ctx, t = ctx.currentTime + 0.005;
+      self.spawn(ctx, self.out, idx, 1, t, null, 0.9);
+      self.drawSel();
+    });
+    setTimeout(function () { self.drawSel(); }, 0);
+  };
+
+  Choppah.prototype.drawSel = function () {
+    var cv = this.selCanvas;
+    if (!cv) return;
+    if (!cv.width) cv.width = cv.clientWidth || 900;
+    var g = cv.getContext('2d'), W = cv.width, H = cv.height, mid = H / 2;
+    g.clearRect(0, 0, W, H);
+    g.fillStyle = '#14161a'; g.fillRect(0, 0, W, H);
+    if (!this.buffer) {
+      g.fillStyle = '#5b6270'; g.font = '12px sans-serif';
+      g.fillText('load a sample to chop', 10, mid);
+      return;
+    }
+    var L = this.buffer.getChannelData(0);
+    var R = this.buffer.numberOfChannels > 1 ? this.buffer.getChannelData(1) : L;
+    var n = L.length;
+    g.strokeStyle = '#2f3947'; g.beginPath();
+    for (var px = 0; px < W; px++) {
+      var a0 = Math.floor(px / W * n), a1 = Math.floor((px + 1) / W * n);
+      var lo = 1, hi = -1;
+      for (var i = a0; i < a1; i++) {
+        var v0 = Math.min(L[i], R[i]), v1 = Math.max(L[i], R[i]);
+        if (v0 < lo) lo = v0; if (v1 > hi) hi = v1;
+      }
+      if (lo > hi) { lo = 0; hi = 0; }
+      g.moveTo(px + 0.5, mid - hi * (mid - 6));
+      g.lineTo(px + 0.5, mid - lo * (mid - 6) + 0.5);
+    }
+    g.stroke();
+    for (var s = 0; s < this.slices.length; s++) {
+      var x0 = this.slices[s].start / n * W;
+      var active = s === this.activeSlice;
+      g.fillStyle = active ? 'rgba(255,162,41,0.16)' : 'rgba(77,163,255,0.05)';
+      var x1 = (s + 1 < this.slices.length ? this.slices[s + 1].start / n * W : W);
+      g.fillRect(x0, 0, x1 - x0, H);
+      g.strokeStyle = active ? '#ffa229' : 'rgba(216,220,230,0.3)';
+      g.beginPath(); g.moveTo(x0 + 0.5, 0); g.lineTo(x0 + 0.5, H); g.stroke();
+      g.fillStyle = active ? '#ffa229' : '#8b93a5';
+      g.font = '9px sans-serif';
+      g.fillText(String(s + 1), x0 + 3, 10);
+    }
+  };
+
+  window.Choppah = Choppah;
+})();

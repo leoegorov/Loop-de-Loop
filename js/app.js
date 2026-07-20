@@ -7,6 +7,9 @@
   var drums = null;
   var bass = null;
   var prizm = null;
+  var choppah = null;
+  var internalSynths = {};   // midiTarget key -> engine instance (registry)
+  function internalSynthFor(t) { return (t && internalSynths[t]) || null; }
   var strips = [];           // parallel to engine.channels: { ch, root, els }
   var autoStrips = [];       // automation loop strips
   var autoTargetsUnsub = null;
@@ -67,8 +70,18 @@
       prizm = new window.Prizm(engine);
       prizm.buildUI($('prizm-panel'), $('prizm-ui'));
       wirePrizm();
+
+      choppah = new window.Choppah(engine);
+      choppah.buildUI($('choppah-panel'), $('choppah-ui'));
+      wireChoppah();
+
       wireSong();
-      window.MidiSequencer.setSynth(prizm);   // "→ internal synth" target
+      // internal-synth targets for the sequencer's OUT selector and the loop pump
+      internalSynths.prizm = prizm;
+      internalSynths.chop = choppah;
+      internalSynths.int = prizm;             // back-compat: old channels used 'int'
+      window.MidiSequencer.registerSynth('prizm', 'PRIZM synth', prizm);
+      window.MidiSequencer.registerSynth('chop', 'CHOPPAH', choppah);
 
       drums.fxRack = attachInstrumentFx(drums.out, 'drums-fx', 'drums-fx-btn');
       bass.fxRack = attachInstrumentFx(bass.out, 'bass-fx', 'bass-fx-btn');
@@ -76,6 +89,8 @@
       bass.bankUI = buildPatternBank('bass-bank', bass, '303');
       prizm.fxRack = attachInstrumentFx(prizm.out, 'prizm-fx', 'prizm-fx-btn');
       prizm.routeTap = prizm.fxRack.output;   // → looper records the FX'd signal
+      choppah.fxRack = attachInstrumentFx(choppah.out, 'choppah-fx', 'choppah-fx-btn');
+      choppah.routeTap = choppah.fxRack.output;
 
       powerMsg('Requesting microphone access — answer the browser prompt…');
       try {
@@ -275,6 +290,7 @@
         $('bass-toggle').classList.remove('active');
       }
       if (prizm) prizm.allOff();
+      if (choppah) choppah.allOff();
       autoLoopsRun = false;
       autoLoopsStartFrame = 0;
       autoStrips.forEach(function (s) { s.root.remove(); });
@@ -498,6 +514,7 @@
         out = out.concat(drums.fxRack.songAutomationTracks('DRUMS'));
         out = out.concat(bass.fxRack.songAutomationTracks('303'));
         out = out.concat(prizm.fxRack.songAutomationTracks('PRIZM'));
+        out = out.concat(choppah.fxRack.songAutomationTracks('CHOPPAH'));
         return out;
       },
       setDrums: setDrumsOn,
@@ -533,6 +550,30 @@
     });
     $('prizm-vol').addEventListener('input', function () {
       prizm.setVolume(parseFloat(this.value));
+    });
+  }
+
+  /* ---------------- CHOPPAH sample chopper ---------------- */
+  function wireChoppah() {
+    $('choppah-btn').addEventListener('click', function () {
+      var hidden = $('choppah-panel').classList.toggle('hidden');
+      if (!hidden && choppah.selCanvas) {   // re-fit the canvas now that it has width
+        choppah.selCanvas.width = choppah.selCanvas.clientWidth || 900;
+        choppah.drawSel();
+      }
+    });
+    $('choppah-midi-in').addEventListener('change', function () {
+      choppah.midiIn = this.checked;
+      if (!this.checked) choppah.allOff();
+    });
+    $('choppah-to-looper').addEventListener('change', function () {
+      choppah.setLoopRoute(this.checked);
+      status(this.checked ?
+        'CHOPPAH routed into the loop input bus — loop channels now record it.' :
+        'CHOPPAH plays to the master output only.');
+    });
+    $('choppah-vol').addEventListener('input', function () {
+      choppah.setVolume(parseFloat(this.value));
     });
   }
 
@@ -688,11 +729,16 @@
     midi.onRaw = function (data, timeStamp) {
       var frame = engine.perfToFrame(timeStamp) - engine.compFrames;
       var isNoteOn = (data[0] & 0xF0) === 0x90 && data[2] > 0;
+      var hiP = data[0] & 0xF0;
       if (prizm && prizm.midiIn) {
-        var hiP = data[0] & 0xF0;
         if (isNoteOn) prizm.noteOn(data[1], data[2] / 127);
         else if (hiP === 0x80 || hiP === 0x90) prizm.noteOff(data[1]);
         else if (hiP === 0xB0 && data[1] === 123) prizm.allOff();
+      }
+      if (choppah && choppah.midiIn) {
+        if (isNoteOn) choppah.noteOn(data[1], data[2] / 127);
+        else if (hiP === 0x80 || hiP === 0x90) choppah.noteOff(data[1]);
+        else if (hiP === 0xB0 && data[1] === 123) choppah.allOff();
       }
       // step recording in an open sequencer consumes notes (skip arm-trigger/capture)
       if (window.MidiSequencer && window.MidiSequencer.handleMidi(data)) return;
@@ -747,7 +793,8 @@
      Look-ahead scheduler: sends each channel's captured events to the MIDI output,
      repeating every loop cycle, phase-locked via the channel's anchor frame. */
   function flushNotes(ch) {
-    if (ch.midiTarget === 'int') { if (prizm) prizm.allOff(); return; }
+    var synth = internalSynthFor(ch.midiTarget);
+    if (synth) { synth.allOff(); return; }
     if (!midi || !midi.output) return;
     ch.usedMidiChannels().forEach(function (c) {
       midi.output.send([0xB0 | c, 123, 0]);  // all notes off
@@ -779,8 +826,9 @@
     var horizon = nowF + 0.2 * sr;
     strips.forEach(function (s) {
       var ch = s.ch;
-      var internal = ch.midiTarget === 'int';
-      var sink = internal ? prizm : (midi && midi.output);
+      var synth = internalSynthFor(ch.midiTarget);
+      var internal = !!synth;
+      var sink = internal ? synth : (midi && midi.output);
       var active = (ch.state === 'playing' || ch.state === 'overdubbing') &&
         ch.lenFrames > 0 && ch.midiEvents.length > 0 && sink && !ch.midiMute;
       if (!active) {
@@ -790,13 +838,14 @@
       var from = (ch.schedFrom === null || ch.schedFrom < nowF) ? nowF : ch.schedFrom;
       var anchor = ch.anchorFrame, len = ch.lenFrames;
       if (internal) {
-        loopNotePairs(ch).forEach(function (n) {
+        // schedule in onset order so control notes latch before their pitch notes
+        loopNotePairs(ch).sort(function (a, b) { return a.on - b.on; }).forEach(function (n) {
           var pitch = Math.max(0, Math.min(127, n.pitch + (ch.transpose || 0)));
           var dur = n.off - n.on; if (dur <= 0) dur += len;
           var k = Math.floor((from - anchor - n.on) / len) + 1;
           var f = anchor + n.on + k * len;
           while (f <= horizon) {
-            prizm.playScheduled(pitch, n.vel / 127, f / sr, (f + dur) / sr);
+            synth.playScheduled(pitch, n.vel / 127, f / sr, (f + dur) / sr);
             f += len;
           }
         });

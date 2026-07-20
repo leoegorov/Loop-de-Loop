@@ -247,6 +247,24 @@ body {
 }
 #prizm-panel .drum-head input[type="range"] { accent-color: var(--queued); }
 #prizm-ui { display: flex; flex-direction: column; gap: 0.6rem; }
+
+/* ---- CHOPPAH ---- */
+.choppah-title { color: var(--od) !important; font-weight: 600; letter-spacing: 0.25em; }
+#choppah-ui { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.2rem 0; }
+.chop-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.chop-row button {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--edge);
+  border-radius: 5px; padding: 0.32rem 0.7rem; cursor: pointer;
+  font-size: 0.72rem; letter-spacing: 0.05em;
+}
+.chop-row button:hover { border-color: var(--od); }
+.chop-load { color: var(--od) !important; }
+.chop-name { font-size: 0.72rem; color: var(--dim); min-width: 8rem; }
+.chop-canvas {
+  width: 100%; height: 150px; display: block;
+  border: 1px solid var(--edge); border-radius: 6px; cursor: pointer; background: #14161a;
+}
+.chop-hint { font-size: 0.68rem; color: var(--dim); }
 .pz-grid {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 0.6rem;
@@ -581,10 +599,12 @@ body.learn-mode [data-mappable] { outline: 2px dashed var(--queued); outline-off
   resize: both; overflow: hidden;
   display: flex; flex-direction: column;
 }
+.seq-scroll {
+  flex: 1 1 auto; overflow-y: auto; overflow-x: hidden;
+  border: 1px solid var(--edge); border-radius: 6px; background: #1f232b;
+}
 .seq-canvas {
-  width: 100%; flex: 1 1 auto; min-height: 10rem; display: block;
-  border: 1px solid var(--edge); border-radius: 6px;
-  cursor: crosshair; background: #1f232b;
+  width: 100%; display: block; cursor: crosshair; background: #1f232b;
 }
 .seq-l {
   display: flex; align-items: center; gap: 0.3rem;

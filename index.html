@@ -11,7 +11,7 @@ if (location.protocol === 'http:' && !/^(localhost|127\.|\[?::1)/.test(location.
   location.replace('https:' + location.href.slice(5));
 }
 </script>
-<link rel="stylesheet" href="css/style.css?v=21">
+<link rel="stylesheet" href="css/style.css?v=22">
 </head>
 <body>
 
@@ -119,6 +119,7 @@ if (location.protocol === 'http:' && !/^(localhost|127\.|\[?::1)/.test(location.
     <button id="drums-btn" title="Show/hide the 808 drum machine (D)">DRUMS</button>
     <button id="bass-btn" title="Show/hide the TB-303 bass synth (B)">303</button>
     <button id="prizm-btn" title="Show/hide the PRIZM-2 dual refraction synth">PRIZM</button>
+    <button id="choppah-btn" title="Show/hide the CHOPPAH sample chopper">CHOP</button>
     <button id="song-btn" title="Show/hide the song arranger (arrange loops + drums + 303 on a bar timeline)">SONG</button>
     <button id="midi-learn-btn" title="Toggle MIDI learn mode">MIDI LEARN</button>
     <button id="playall-btn" data-mappable="global:playAll" title="Resume all stopped loops together (P)">PLAY ALL</button>
@@ -196,6 +197,20 @@ if (location.protocol === 'http:' && !/^(localhost|127\.|\[?::1)/.test(location.
   <div id="prizm-fx" class="inst-fx hidden"></div>
 </section>
 
+<section id="choppah-panel" class="hidden">
+  <div class="drum-head">
+    <span class="drum-title choppah-title">CHOPPAH</span>
+    <label class="chk" title="Play CHOPPAH from incoming (unmapped) MIDI notes"><input type="checkbox" id="choppah-midi-in" checked> MIDI in</label>
+    <label class="chk" title="Route CHOPPAH into the loop input bus so loop channels record it (latency-compensated)"><input type="checkbox" id="choppah-to-looper"> → looper</label>
+    <label>Vol</label>
+    <input type="range" id="choppah-vol" min="0" max="1.2" step="0.01" value="0.9">
+    <button id="choppah-fx-btn" title="Effects on the CHOPPAH bus (with automation)">FX</button>
+    <span class="hint">sample chopper · below C4 = trigger slices (rearrange) · C4 and up = re-pitch the active slice</span>
+  </div>
+  <div id="choppah-ui"></div>
+  <div id="choppah-fx" class="inst-fx hidden"></div>
+</section>
+
 <main id="channels" class="hidden"></main>
 
 <div id="add-loop-tools" class="hidden">
@@ -208,18 +223,19 @@ if (location.protocol === 'http:' && !/^(localhost|127\.|\[?::1)/.test(location.
   <span class="keys">Keys: 1–9 = loop button · Shift+1–9 = stop · N = add loop · P = play all · Space = stop all · D = drums · B = 303</span>
 </footer>
 
-<script src="js/effects.js?v=21"></script>
-<script src="js/engine.js?v=21"></script>
-<script src="js/midi.js?v=21"></script>
-<script src="js/drums.js?v=21"></script>
-<script src="js/bass303.js?v=21"></script>
-<script src="js/prizm.js?v=21"></script>
-<script src="js/export.js?v=21"></script>
-<script src="js/import.js?v=21"></script>
-<script src="js/editor.js?v=21"></script>
-<script src="js/sequencer.js?v=21"></script>
-<script src="js/slicer.js?v=21"></script>
-<script src="js/song.js?v=21"></script>
-<script src="js/app.js?v=21"></script>
+<script src="js/effects.js?v=22"></script>
+<script src="js/engine.js?v=22"></script>
+<script src="js/midi.js?v=22"></script>
+<script src="js/drums.js?v=22"></script>
+<script src="js/bass303.js?v=22"></script>
+<script src="js/prizm.js?v=22"></script>
+<script src="js/choppah.js?v=22"></script>
+<script src="js/export.js?v=22"></script>
+<script src="js/import.js?v=22"></script>
+<script src="js/editor.js?v=22"></script>
+<script src="js/sequencer.js?v=22"></script>
+<script src="js/slicer.js?v=22"></script>
+<script src="js/song.js?v=22"></script>
+<script src="js/app.js?v=22"></script>
 </body>
 </html>

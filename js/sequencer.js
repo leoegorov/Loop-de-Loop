@@ -5,14 +5,41 @@
 (function () {
   'use strict';
 
-  var PITCH_MIN = 36, PITCH_MAX = 84;                 // C2..C6
+  var PITCH_MIN = 12, PITCH_MAX = 108;                // C0..C8
   var ROWS = PITCH_MAX - PITCH_MIN + 1;
+  var ROW_H = 12;                                     // px per pitch row (piano roll scrolls)
   var BLACK = { 1: 1, 3: 1, 6: 1, 8: 1, 10: 1 };
 
   var ui = null;
   var ed = null;        // open editor session { engine, midi, ch, chLabel, pattern, status }
   var noteDrag = null;  // { note, mode:'move'|'resize', startStep, startPitch, origStep, origPitch, origLen, moved, created }
-  var internalSynth = null;   // PRIZM, for the "→ internal synth" target
+
+  /* Internal-synth targets selectable in the OUT dropdown, registered by app.js. */
+  var synthReg = [];    // [{ key, name, inst }]
+  function registerSynth(key, name, inst) {
+    synthReg.push({ key: key, name: name, inst: inst });
+    if (ui) rebuildTargetOptions();
+  }
+  function internalSynthFor(target) {
+    if (target === 'int') target = 'prizm';          // back-compat with old channels
+    for (var i = 0; i < synthReg.length; i++) if (synthReg[i].key === target) return synthReg[i].inst;
+    return null;
+  }
+  function normalizeTarget(target) {
+    if (!target || target === 'ext') return 'ext';
+    return internalSynthFor(target) ? (target === 'int' ? 'prizm' : target) : 'ext';
+  }
+  function rebuildTargetOptions() {
+    if (!ui || !ui.target) return;
+    var cur = ui.target.value;
+    ui.target.innerHTML = '<option value="ext">MIDI port</option>';
+    synthReg.forEach(function (s) {
+      var o = document.createElement('option');
+      o.value = s.key; o.textContent = s.name;
+      ui.target.appendChild(o);
+    });
+    ui.target.value = cur;
+  }
 
   /* Measured MIDI→synth→audio-input round trip for bounce recordings (ms).
      Self-calibrates: each bounce measures where the first note's audio landed and
@@ -112,7 +139,7 @@
           '<label class="seq-l">Bars <select class="seq-bars"><option>1</option><option selected>2</option><option>4</option><option>8</option></select></label>' +
           '<label class="seq-l">Ch <select class="seq-chan"></select></label>' +
           '<label class="seq-l">Out <select class="seq-target" title="Where this loop\'s MIDI plays">' +
-            '<option value="ext">MIDI port</option><option value="int">PRIZM synth</option>' +
+            '<option value="ext">MIDI port</option>' +
           '</select></label>' +
           '<label class="seq-l">Note <select class="seq-notelen">' +
             '<option value="1">1/16</option><option value="2" selected>1/8</option>' +
@@ -127,7 +154,7 @@
             '<button class="seq-rest" title="Insert a rest (advance the cursor without a note)">REST</button>' +
           '</span>' +
         '</div>' +
-        '<canvas class="seq-canvas" height="392"></canvas>' +
+        '<div class="seq-scroll"><canvas class="seq-canvas" height="392"></canvas></div>' +
         '<div class="editor-row editor-foot">' +
           '<span class="ed-sel seq-hint">click = add · drag = move · right edge = resize · click note = delete · wheel = velocity</span>' +
           '<button class="seq-clear">CLEAR</button>' +
@@ -156,6 +183,7 @@
     ui = {
       overlay: overlay,
       canvas: canvas,
+      scroll: overlay.querySelector('.seq-scroll'),
       g: canvas.getContext('2d'),
       title: overlay.querySelector('.seq-title'),
       info: overlay.querySelector('.seq-info'),
@@ -190,10 +218,12 @@
     });
     ui.target.addEventListener('change', function () {
       if (!ed) return;
-      ed.ch.midiTarget = this.value;
+      var val = this.value;
+      ed.ch.midiTarget = val;
       syncTargetUI();
-      if (this.value === 'int' && !internalSynth) ed.status('Internal synth unavailable.');
-      else ed.status(this.value === 'int' ? 'This loop\'s MIDI plays the internal PRIZM synth.' : 'This loop\'s MIDI plays the external MIDI port.');
+      if (val === 'ext') { ed.status('This loop\'s MIDI plays the external MIDI port.'); return; }
+      var entry = synthReg.filter(function (x) { return x.key === val; })[0];
+      ed.status(entry ? 'This loop\'s MIDI plays the internal ' + entry.name + '.' : 'Internal synth unavailable.');
     });
 
     overlay.querySelector('.seq-clear').addEventListener('click', function () {
@@ -314,26 +344,30 @@
       render();
     }, { passive: false });
 
-    // resizable editor: keep the canvas backing store matched to its display size
+    // resizable editor: fit the canvas width to the scroll area; height is fixed
+    // at ROWS*ROW_H (C0..C8 is tall, so the piano roll scrolls vertically)
     if (window.ResizeObserver) {
       var ro = new ResizeObserver(function () {
         if (!ed) return;
-        var w = canvas.clientWidth, h = canvas.clientHeight;
-        if (w && h && (w !== canvas.width || h !== canvas.height)) {
+        var w = ui.scroll.clientWidth;
+        var h = ROWS * ROW_H;
+        if (w && (w !== canvas.width || canvas.height !== h)) {
           canvas.width = w; canvas.height = h;
           render();
         }
       });
-      ro.observe(canvas);
+      ro.observe(ui.scroll);
     }
+    rebuildTargetOptions();
   }
 
   function previewNote(pitch) {
     if (sess) return;
     var vel = parseInt(ui.vel.value, 10);
-    if (ed.ch.midiTarget === 'int' && internalSynth) {
+    var synth = internalSynthFor(ed.ch.midiTarget);
+    if (synth) {
       var t = ed.engine.ctx.currentTime + 0.01;
-      internalSynth.playScheduled(pitch, vel / 127, t, t + 0.3);
+      synth.playScheduled(pitch, vel / 127, t, t + 0.3);
       return;
     }
     var out = ed.midi.output;
@@ -445,14 +479,14 @@
   /* Internal synth target: swap ⏺ REC LOOP for ⚡ RENDER MIDI (the pattern is
      rendered offline — nothing is actually recorded). */
   function syncTargetUI() {
-    var internal = ui.target.value === 'int';
+    var internal = ui.target.value !== 'ext';
     ui.recBtn.classList.toggle('hidden', internal);
     ui.renderBtn.classList.toggle('hidden', !internal);
   }
 
   function targetReady() {
-    if (ed.ch.midiTarget === 'int') {
-      if (!internalSynth) { ed.status('Internal synth unavailable.'); return false; }
+    if (ed.ch.midiTarget !== 'ext') {
+      if (!internalSynthFor(ed.ch.midiTarget)) { ed.status('Internal synth unavailable.'); return false; }
       return true;
     }
     if (!ed.midi.output) { ed.status('Select a MIDI clock out port first.'); return false; }
@@ -480,8 +514,9 @@
     endStepRec();
     var ch = ed.ch;
     // Internal synth: no real-time capture at all — render the pattern offline
-    // through an identical PRIZM graph and load the result into the loop.
-    if (ch.midiTarget === 'int' && internalSynth) { renderBounce(ch); return; }
+    // through an identical synth graph and load the result into the loop.
+    var synth = internalSynthFor(ch.midiTarget);
+    if (synth) { renderBounce(ch, synth); return; }
     var startF = ensureTransport();
     var lenF = Math.round(ed.pattern.bars * ed.engine.transport.barFrames());
     sess = { mode: 'rec', startF: startF, lenF: lenF, endF: startF + lenF, schedFrom: null, closeSent: false };
@@ -500,11 +535,11 @@
     ed.status('Recording pattern into loop ' + ed.chLabel + ' (' + ed.pattern.bars + ' bars)…');
   }
 
-  /* Internal-synth bounce: render the pattern offline with PRIZM and load the
-     result straight into the loop channel. Instant (no waiting a pattern pass),
-     aligned by construction (no latency, no rotate), and note release tails wrap
-     around the loop seam. Playback is scheduled anchored to the bar grid. */
-  function renderBounce(ch) {
+  /* Internal-synth bounce: render the pattern offline with the selected engine and
+     load the result straight into the loop channel. Instant (no waiting a pattern
+     pass), aligned by construction (no latency, no rotate), and note release tails
+     wrap around the loop seam. Playback is scheduled anchored to the bar grid. */
+  function renderBounce(ch, synth) {
     var eng = ed.engine, sr = eng.ctx.sampleRate;
     var sf = stepFrames(eng);
     var lenF = Math.round(ed.pattern.bars * eng.transport.barFrames());
@@ -516,8 +551,8 @@
       notes.push({ pitch: n.pitch, vel: n.vel / 127, onT: on / sr, offT: (on + dur) / sr });
     });
     var pattern = ed.pattern, label = ed.chLabel;
-    ed.status('Rendering pattern with PRIZM…');
-    internalSynth.renderPattern(notes, lenF / sr).then(function (res) {
+    ed.status('Rendering pattern…');
+    synth.renderPattern(notes, lenF / sr).then(function (res) {
       if (ch.state !== 'empty' || ch.pendingAction) {
         if (ed) ed.status('Loop ' + label + ' is no longer empty — render discarded.');
         return;
@@ -566,7 +601,7 @@
     var rotate = 0;
     // Only external takes get here (internal-synth bounces render offline and are
     // aligned by construction); guard anyway so a stray call can't misrotate one.
-    if (ch.midiTarget === 'int') {
+    if (internalSynthFor(ch.midiTarget)) {
       ch.node.port.postMessage({ cmd: 'rotate', frames: 0 });   // seam-fade only
       return;
     }
@@ -636,7 +671,8 @@
 
   function flushNotes() {
     if (!ed) return;
-    if (ed.ch.midiTarget === 'int') { if (internalSynth) internalSynth.allOff(); return; }
+    var synth = internalSynthFor(ed.ch.midiTarget);
+    if (synth) { synth.allOff(); return; }
     if (!ed.midi.output) return;
     var out = ed.midi.output;
     patternChans(ed.pattern).forEach(function (c) {
@@ -696,21 +732,23 @@
   /* Send the pattern's notes for [from, horizon] to the current target. */
   function emitNotes(from, horizon) {
     var eng = ed.engine, sr = eng.transport.sr;
-    if (ed.ch.midiTarget === 'int' && internalSynth) {
+    var synth = internalSynthFor(ed.ch.midiTarget);
+    if (synth) {
       var sf = stepFrames(eng);
-      ed.pattern.notes.forEach(function (n) {
+      // schedule in onset order so CHOPPAH control notes latch before pitch notes
+      ed.pattern.notes.slice().sort(function (a, b) { return a.step - b.step; }).forEach(function (n) {
         var on = Math.round(n.step * sf);
         var dur = Math.max(1, Math.round(n.len * sf));
         if (sess.mode === 'rec') {
           var absOn = sess.startF + on;
           if (absOn > from && absOn <= horizon && absOn < sess.endF) {
-            internalSynth.playScheduled(n.pitch, n.vel / 127, absOn / sr, (absOn + dur) / sr);
+            synth.playScheduled(n.pitch, n.vel / 127, absOn / sr, (absOn + dur) / sr);
           }
         } else {
           var k = Math.floor((from - sess.startF - on) / sess.lenF) + 1;
           if (k < 0) k = 0;
           for (var f = sess.startF + on + k * sess.lenF; f <= horizon; f += sess.lenF) {
-            if (f > from) internalSynth.playScheduled(n.pitch, n.vel / 127, f / sr, (f + dur) / sr);
+            if (f > from) synth.playScheduled(n.pitch, n.vel / 127, f / sr, (f + dur) / sr);
           }
         }
       });
@@ -828,12 +866,16 @@
     ui.bars.value = String(ed.pattern.bars);
     if (!ui.bars.value) { ui.bars.value = '2'; ed.pattern.bars = 2; }
     ui.chan.value = String(ed.pattern.chan);
-    ui.target.value = ch.midiTarget || 'ext';
+    ch.midiTarget = normalizeTarget(ch.midiTarget);   // resolve old 'int'/missing engine
+    rebuildTargetOptions();
+    ui.target.value = ch.midiTarget;
     syncTargetUI();
     ui.overlay.classList.remove('hidden');
-    ui.canvas.width = ui.canvas.clientWidth || 900;
-    ui.canvas.height = ui.canvas.clientHeight || 392;
+    ui.canvas.width = ui.scroll.clientWidth || 900;
+    ui.canvas.height = ROWS * ROW_H;
     render();
+    // center the tall piano roll near C4 (middle of the range)
+    ui.scroll.scrollTop = (PITCH_MAX - 60) * ROW_H - ui.scroll.clientHeight / 2;
     if (!pumpTimer) pumpTimer = setInterval(pump, 25);
     if (!rafOn) { rafOn = true; requestAnimationFrame(playheadLoop); }
   }
@@ -854,6 +896,7 @@
 
   window.MidiSequencer = {
     open: open, handleMidi: handleMidi,
-    setSynth: function (synth) { internalSynth = synth; }
+    registerSynth: registerSynth,
+    setSynth: function (synth) { registerSynth('prizm', 'PRIZM synth', synth); }
   };
 })();
