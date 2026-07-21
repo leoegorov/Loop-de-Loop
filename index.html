@@ -11,7 +11,7 @@
 <div id="power-overlay">
   <div class="power-box">
     <h1>LOOPING</h1>
-    <p>Software loop station — MIDI clock out, unlimited loop channels, per-channel FX.</p>
+    <p>Software loop station — unlimited loop channels, per-channel FX.</p>
     <button id="power-btn">POWER ON</button>
     <p class="hint">Grants microphone + MIDI access. Use Chrome or Edge.</p>
   </div>
@@ -49,11 +49,7 @@
     <label class="chk"><input type="checkbox" id="monitor-toggle"> Monitor</label>
   </div>
 
-  <div class="tb-group">
-    <label>MIDI clock out</label>
-    <select id="midiout-select"><option value="">— none —</option></select>
-    <span id="clock-led" title="MIDI clock running"></span>
-  </div>
+  <!-- MIDI clock out UI removed -->
 
   <div class="tb-group">
     <label>Comp</label>
@@ -106,7 +102,6 @@
 
 <script src="js/effects.js"></script>
 <script src="js/engine.js"></script>
-<script src="js/midi.js"></script>
 <script src="js/drums.js"></script>
 <script src="js/export.js"></script>
 <script src="js/import.js"></script>
