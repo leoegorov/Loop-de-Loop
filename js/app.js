@@ -393,6 +393,13 @@
           '<button class="fx-add-btn" title="Add effect">＋</button>' +
         '</div>' +
       '</div>' +
+      '</div>';
+    var els = {
+      title: root.querySelector('.ch-title'),
+      main: root.querySelector('.loop-btn'),
+      label: root.querySelector('.state-label'),
+      time: root.querySelector('.time-label'),
+      ring: root.querySelector('.ring-fg'),
       stopBtn: root.querySelector('.b-stop'),
       undoBtn: root.querySelector('.b-undo'),
       clearBtn: root.querySelector('.b-clear'),
