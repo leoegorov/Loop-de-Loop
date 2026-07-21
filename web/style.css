@@ -1,0 +1,201 @@
+:root {
+  color-scheme: light;
+  --bg: #0b0d10;
+  --fg: #e7eaf0;
+  --muted: #98a2b3;
+  --card: #121622;
+  --stroke: rgba(231, 234, 240, 0.18);
+  --stroke-strong: rgba(231, 234, 240, 0.42);
+  --accent: #7dd3fc;
+  --danger: #fb7185;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Apple Color Emoji",
+    "Segoe UI Emoji";
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  background: rgba(11, 13, 16, 0.88);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--stroke);
+}
+
+.brand {
+  display: grid;
+  gap: 2px;
+}
+
+.title {
+  font-weight: 650;
+  letter-spacing: 0.2px;
+}
+
+.status {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.file {
+  display: none;
+}
+
+main {
+  padding: 18px 16px 26px;
+  max-width: 980px;
+  margin: 0 auto;
+}
+
+.modules {
+  display: grid;
+  gap: 12px;
+}
+
+.module {
+  border: 1px solid var(--stroke);
+  background: linear-gradient(180deg, rgba(18, 22, 34, 0.95), rgba(18, 22, 34, 0.7));
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.moduleHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.moduleTitle {
+  font-size: 13px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.moduleBody {
+  display: grid;
+  gap: 10px;
+}
+
+.transport {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.ringWrap {
+  position: relative;
+  width: 140px;
+  height: 140px;
+}
+
+.ring {
+  width: 140px;
+  height: 140px;
+}
+
+.ringBase {
+  fill: none;
+  stroke: var(--stroke);
+  stroke-width: 10;
+}
+
+.ringProg {
+  fill: none;
+  stroke: var(--stroke-strong);
+  stroke-width: 10;
+  stroke-linecap: round;
+  transform: rotate(-90deg);
+  transform-origin: 60px 60px;
+  stroke-dasharray: 301.6;
+  stroke-dashoffset: 301.6;
+}
+
+.ringDot {
+  fill: var(--accent);
+  cursor: grab;
+  touch-action: none;
+}
+
+.mainBtn {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  transform: translate(-50%, -50%);
+  width: 88px;
+  height: 88px;
+  border-radius: 999px;
+  border: 1px solid var(--stroke);
+  background: rgba(11, 13, 16, 0.55);
+  color: var(--fg);
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+
+.mainBtn[data-state="recording"],
+.mainBtn[data-state="overdubbing"] {
+  border-color: rgba(251, 113, 133, 0.6);
+}
+
+.mixer {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  width: 56px;
+}
+
+.vol {
+  width: 130px;
+  transform: rotate(-90deg);
+}
+
+.volLabel {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.btn {
+  border: 1px solid var(--stroke);
+  background: rgba(18, 22, 34, 0.7);
+  color: var(--fg);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.btn:hover {
+  background: rgba(18, 22, 34, 0.92);
+}
+
+.btn.danger {
+  border-color: rgba(251, 113, 133, 0.45);
+  color: rgba(251, 113, 133, 0.95);
+}
+
+.stopBtn {
+  justify-self: start;
+}
