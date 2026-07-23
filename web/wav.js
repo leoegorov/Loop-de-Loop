@@ -1,62 +1,45 @@
+function writeStr(view, offset, str) {
+  for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+}
+
 export function encodeWavMono16(float32, sampleRate) {
-  // float32: Float32Array in [-1, 1]
-  const numChannels = 1;
   const bitsPerSample = 16;
-  const blockAlign = (numChannels * bitsPerSample) / 8;
+  const blockAlign = bitsPerSample / 8;
   const byteRate = sampleRate * blockAlign;
   const dataSize = float32.length * 2;
   const buffer = new ArrayBuffer(44 + dataSize);
   const view = new DataView(buffer);
 
-  let off = 0;
-  writeStr(view, off, 'RIFF');
-  off += 4;
-  view.setUint32(off, 36 + dataSize, true);
-  off += 4;
-  writeStr(view, off, 'WAVE');
-  off += 4;
+  writeStr(view, 0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeStr(view, 8, 'WAVE');
+  writeStr(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitsPerSample, true);
+  writeStr(view, 36, 'data');
+  view.setUint32(40, dataSize, true);
 
-  writeStr(view, off, 'fmt ');
-  off += 4;
-  view.setUint32(off, 16, true);
-  off += 4;
-  view.setUint16(off, 1, true);
-  off += 2;
-  view.setUint16(off, numChannels, true);
-  off += 2;
-  view.setUint32(off, sampleRate, true);
-  off += 4;
-  view.setUint32(off, byteRate, true);
-  off += 4;
-  view.setUint16(off, blockAlign, true);
-  off += 2;
-  view.setUint16(off, bitsPerSample, true);
-  off += 2;
-
-  writeStr(view, off, 'data');
-  off += 4;
-  view.setUint32(off, dataSize, true);
-  off += 4;
-
+  let off = 44;
   for (let i = 0; i < float32.length; i++) {
-    let s = float32[i];
-    if (s > 1) s = 1;
-    if (s < -1) s = -1;
+    let s = Math.max(-1, Math.min(1, float32[i]));
     view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
     off += 2;
   }
-
   return buffer;
 }
 
-function writeStr(view, offset, str) {
-  for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
-}
-
-export function arrayBufferToBase64(buf) {
-  const bytes = new Uint8Array(buf);
+export function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
   let binary = '';
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
   return btoa(binary);
 }
 

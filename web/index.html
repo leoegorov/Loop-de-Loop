@@ -1,59 +1,41 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Loop-de-Loop</title>
-    <link rel="stylesheet" href="./style.css" />
-  </head>
-  <body>
-    <header class="topbar">
-      <div class="brand">
-        <div class="title">Loop-de-Loop</div>
-        <div id="status" class="status">Idle</div>
-      </div>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Loop de Loop</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="mode-playpause">
 
-      <div class="actions">
-        <button id="addModuleBtn" class="btn">Add loop</button>
-        <button id="exportBtn" class="btn">Export</button>
-        <button id="importBtn" class="btn">Import</button>
-        <input id="importFile" class="file" type="file" accept="application/json" />
-      </div>
-    </header>
+  <div id="startOverlay" class="overlay">
+    <button id="startBtn" type="button">Enable Mic &amp; Audio</button>
+    <p id="startError" class="error"></p>
+  </div>
 
-    <main>
-      <div id="modules" class="modules"></div>
-    </main>
+  <header id="toolbar">
+    <select id="modeSelect" aria-label="Editing mode">
+      <option value="playpause">▶ Play / Pause (P)</option>
+      <option value="playrec">● Play / Rec (R)</option>
+      <option value="initdel">✚ Init / Delete (I)</option>
+      <option value="offset">◐ Offset (O)</option>
+      <option value="speed">◎ Speed (S)</option>
+      <option value="volume">▮ Volume (V)</option>
+      <option value="copypaste">⧉ Copy / Paste (C)</option>
+      <option value="zoom">⤢ Zoom (Z)</option>
+    </select>
 
-    <template id="moduleTemplate">
-      <section class="module">
-        <div class="moduleHeader">
-          <div class="moduleTitle">Loop</div>
-          <button class="btn danger deleteBtn">Delete</button>
-        </div>
+    <div id="fileButtons">
+      <button id="exportBtn" type="button" title="Export project + audio">Export</button>
+      <button id="importBtn" type="button" title="Import project + audio">Import</button>
+      <input id="importInput" type="file" accept="application/json" hidden>
+    </div>
+  </header>
 
-        <div class="moduleBody">
-          <div class="transport">
-            <div class="ringWrap">
-              <svg class="ring" viewBox="0 0 120 120" aria-hidden="true">
-                <circle class="ringBase" cx="60" cy="60" r="48" />
-                <circle class="ringProg" cx="60" cy="60" r="48" />
-                <circle class="ringDot" cx="60" cy="12" r="4" />
-              </svg>
-              <button class="mainBtn" type="button">REC</button>
-            </div>
+  <main id="grid" role="list"></main>
 
-            <div class="mixer">
-              <input class="vol" type="range" min="0" max="1" step="0.01" value="0.9" orient="vertical" />
-              <div class="volLabel">Vol</div>
-            </div>
-          </div>
+  <div id="zoomLayer" hidden></div>
 
-          <button class="btn stopBtn" type="button">Stop</button>
-        </div>
-      </section>
-    </template>
-
-    <script type="module" src="./app.js"></script>
-  </body>
+  <script type="module" src="app.js"></script>
+</body>
 </html>
