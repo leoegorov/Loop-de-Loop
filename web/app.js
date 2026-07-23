@@ -3,6 +3,20 @@ import { encodeWavMono16, arrayBufferToBase64, base64ToArrayBuffer } from './wav
 const MODES = ['playpause', 'playrec', 'initdel', 'offset', 'speed', 'volume', 'copypaste', 'zoom'];
 const SHORTCUTS = { p: 'playpause', r: 'playrec', i: 'initdel', o: 'offset', s: 'speed', v: 'volume', c: 'copypaste', z: 'zoom' };
 
+const NAME_ADJ = ['velvet', 'crimson', 'hollow', 'silent', 'neon', 'dusty', 'fractal', 'loose', 'tidal', 'amber', 'wild', 'glass', 'copper', 'faint', 'solar', 'lunar', 'static', 'warm', 'cold', 'bright'];
+const NAME_NOUN = ['echo', 'loop', 'groove', 'pulse', 'drift', 'signal', 'chorus', 'tape', 'delay', 'fuzz', 'current', 'orbit', 'ember', 'wave', 'beat', 'riff', 'haze', 'spark', 'tempo', 'vinyl'];
+
+function randomProjectName() {
+  const a = NAME_ADJ[Math.floor(Math.random() * NAME_ADJ.length)];
+  const n = NAME_NOUN[Math.floor(Math.random() * NAME_NOUN.length)];
+  return `${a}-${n}`;
+}
+
+function sanitizeFilename(name) {
+  const cleaned = (name || '').trim().replace(/[^a-zA-Z0-9-_]+/g, '-').replace(/^-+|-+$/g, '');
+  return cleaned || 'untitled';
+}
+
 const body = document.body;
 const modeSelect = document.getElementById('modeSelect');
 const gridEl = document.getElementById('grid');
@@ -13,9 +27,12 @@ const startError = document.getElementById('startError');
 const exportBtn = document.getElementById('exportBtn');
 const importBtn = document.getElementById('importBtn');
 const importInput = document.getElementById('importInput');
+const projectNameInput = document.getElementById('projectNameInput');
+const randomNameBtn = document.getElementById('randomNameBtn');
 
 let currentMode = 'playpause';
 let uidCounter = 1;
+let projectName = randomProjectName();
 
 // --- Audio state ---
 let audioCtx = null;
@@ -29,19 +46,20 @@ let masterStartTime = null;  // audioCtx time anchor for the shared transport, f
 let globalMegacycle = null;
 let globalNextBoundary = null;
 
-let cells = [];              // array of track objects
+let tracks = [];             // array of track objects, each with a row/col position
 let clipboard = null;
 let zoomedId = null;
-let dragSrcIndex = null;
+let dragSrcId = null;
 
 function mod(a, n) { return ((a % n) + n) % n; }
 function gcd(a, b) { a = Math.abs(a); b = Math.abs(b); while (b) { [a, b] = [b, a % b]; } return a || 1; }
 function lcm2(a, b) { return (a / gcd(a, b)) * b; }
 function lcmAll(nums) { return nums.reduce((acc, n) => lcm2(acc, n), 1); }
 
-function makeTrack() {
+function makeTrack(row, col) {
   return {
     id: uidCounter++,
+    row, col,
     buffer: null,
     lengthUnits: null,
     autoPhaseOffset: 0,
@@ -63,7 +81,7 @@ function makeTrack() {
   };
 }
 
-cells.push(makeTrack());
+tracks.push(makeTrack(0, 0));
 
 // ---------- Audio engine ----------
 
@@ -91,7 +109,7 @@ async function initAudio() {
   }
 
   audioCtx = ctx;
-  for (const t of cells) ensureGain(t);
+  for (const t of tracks) ensureGain(t);
 }
 
 function ensureGain(track) {
@@ -116,7 +134,7 @@ function ensureGain(track) {
 
 function activePlayingLengths(excludeTrack) {
   const lens = [];
-  for (const t of cells) {
+  for (const t of tracks) {
     if (t !== excludeTrack && t.buffer && t.playing) lens.push(t.lengthUnits);
   }
   return lens;
@@ -131,7 +149,7 @@ function nextBoundaryForLengths(now, lengths) {
 
 function currentMegacycle() {
   let maxLen = unitLength || 0.001;
-  for (const t of cells) {
+  for (const t of tracks) {
     if (t.buffer && t.playing) maxLen = Math.max(maxLen, t.lengthUnits * unitLength);
   }
   return maxLen;
@@ -143,7 +161,7 @@ function resyncAll(atTime) {
   const megacycle = currentMegacycle();
   const k = Math.floor((now - masterStartTime) / megacycle);
   const anchor = masterStartTime + k * megacycle;
-  for (const t of cells) {
+  for (const t of tracks) {
     if (t.playing && t.buffer) scheduleTrackAt(t, now, anchor);
   }
   globalMegacycle = megacycle;
@@ -362,17 +380,32 @@ function resetTrack(track) {
   track.pausedPhase = 0;
 }
 
-function removeTrack(index) {
-  const track = cells[index];
+function removeTrack(track) {
   hardStop(track);
   if (track.gainNode) { try { track.gainNode.disconnect(); } catch (e) {} }
-  cells.splice(index, 1);
-  if (!cells.some((t) => t.buffer)) {
+  tracks = tracks.filter((t) => t !== track);
+  if (!tracks.some((t) => t.buffer)) {
     unitLength = null;
     masterStartTime = null;
     globalMegacycle = null;
     globalNextBoundary = null;
   }
+}
+
+// ---------- 2D grid geometry ----------
+
+function trackAt(row, col) {
+  return tracks.find((t) => t.row === row && t.col === col) || null;
+}
+
+function gridBounds() {
+  if (!tracks.length) return { minR: 0, maxR: 0, minC: 0, maxC: 0 };
+  let minR = Infinity, maxR = -Infinity, minC = Infinity, maxC = -Infinity;
+  for (const t of tracks) {
+    minR = Math.min(minR, t.row); maxR = Math.max(maxR, t.row);
+    minC = Math.min(minC, t.col); maxC = Math.max(maxC, t.col);
+  }
+  return { minR, maxR, minC, maxC };
 }
 
 // ---------- UI: mode handling ----------
@@ -393,6 +426,15 @@ window.addEventListener('keydown', (e) => {
   if (SHORTCUTS[key]) setMode(SHORTCUTS[key]);
 });
 
+// ---------- Project name ----------
+
+projectNameInput.value = projectName;
+projectNameInput.addEventListener('input', () => { projectName = projectNameInput.value; });
+randomNameBtn.addEventListener('click', () => {
+  projectName = randomProjectName();
+  projectNameInput.value = projectName;
+});
+
 // ---------- Grid rendering ----------
 
 function render() {
@@ -400,52 +442,83 @@ function render() {
   zoomLayer.innerHTML = '';
 
   if (zoomedId !== null) {
-    const idx = cells.findIndex((t) => t.id === zoomedId);
-    if (idx === -1) { zoomedId = null; } else {
+    const track = tracks.find((t) => t.id === zoomedId);
+    if (!track) { zoomedId = null; } else {
       gridEl.hidden = true;
       zoomLayer.hidden = false;
-      const cell = buildCell(cells[idx], idx);
-      zoomLayer.appendChild(cell);
+      zoomLayer.appendChild(buildModuleCell(track));
       return;
     }
   }
   gridEl.hidden = false;
   zoomLayer.hidden = true;
 
-  cells.forEach((track, index) => {
-    gridEl.appendChild(buildCell(track, index));
-  });
+  const { minR, maxR, minC, maxC } = gridBounds();
+  const r0 = minR - 1, r1 = maxR + 1, c0 = minC - 1, c1 = maxC + 1;
+  const rows = r1 - r0 + 1, cols = c1 - c0 + 1;
+  gridEl.style.gridTemplateColumns = `repeat(${cols}, var(--cell-size))`;
+  gridEl.style.gridTemplateRows = `repeat(${rows}, var(--cell-size))`;
 
-  const placeholder = document.createElement('div');
-  placeholder.className = 'cell placeholder';
-  placeholder.addEventListener('click', () => {
-    if (currentMode !== 'initdel') return;
-    cells.push(makeTrack());
-    ensureGain(cells[cells.length - 1]);
-    render();
-  });
-  gridEl.appendChild(placeholder);
+  let centerEl = null;
+  for (let r = r0; r <= r1; r++) {
+    for (let c = c0; c <= c1; c++) {
+      const track = trackAt(r, c);
+      const cellEl = track ? buildModuleCell(track) : buildSlotCell(r, c);
+      cellEl.style.gridRow = String(r - r0 + 1);
+      cellEl.style.gridColumn = String(c - c0 + 1);
+      gridEl.appendChild(cellEl);
+      if (track && (centerEl === null || track.id === tracks[0].id)) centerEl = cellEl;
+    }
+  }
+  if (centerEl) centerEl.scrollIntoView({ block: 'center', inline: 'center' });
 }
 
-function buildCell(track, index) {
-  const cell = document.createElement('div');
-  cell.className = 'cell' + (track.buffer ? '' : ' empty') + (clipboard && clipboard.sourceId === track.id ? ' copied' : '');
-  cell.setAttribute('role', 'listitem');
-
-  cell.draggable = !['offset', 'speed', 'volume'].includes(currentMode);
-  cell.addEventListener('dragstart', () => { dragSrcIndex = index; cell.classList.add('dragging'); });
-  cell.addEventListener('dragend', () => { cell.classList.remove('dragging'); });
+function setupDragTarget(cell, getRow, getCol) {
   cell.addEventListener('dragover', (e) => { e.preventDefault(); cell.classList.add('drag-over'); });
   cell.addEventListener('dragleave', () => cell.classList.remove('drag-over'));
   cell.addEventListener('drop', (e) => {
     e.preventDefault();
     cell.classList.remove('drag-over');
-    if (dragSrcIndex === null || dragSrcIndex === index) return;
-    const [moved] = cells.splice(dragSrcIndex, 1);
-    cells.splice(index, 0, moved);
-    dragSrcIndex = null;
+    if (dragSrcId === null) return;
+    const dragged = tracks.find((t) => t.id === dragSrcId);
+    dragSrcId = null;
+    if (!dragged) return;
+    const row = getRow(), col = getCol();
+    if (dragged.row === row && dragged.col === col) return;
+    const occupant = trackAt(row, col);
+    if (occupant && occupant !== dragged) {
+      occupant.row = dragged.row; occupant.col = dragged.col;
+    }
+    dragged.row = row; dragged.col = col;
     render();
   });
+}
+
+function buildSlotCell(row, col) {
+  const cell = document.createElement('div');
+  cell.className = 'cell slot';
+  cell.setAttribute('role', 'listitem');
+  cell.draggable = false;
+  setupDragTarget(cell, () => row, () => col);
+  cell.addEventListener('click', () => {
+    if (!audioCtx || currentMode !== 'initdel') return;
+    const t = makeTrack(row, col);
+    ensureGain(t);
+    tracks.push(t);
+    render();
+  });
+  return cell;
+}
+
+function buildModuleCell(track) {
+  const cell = document.createElement('div');
+  cell.className = 'cell module' + (track.buffer ? '' : ' empty') + (clipboard && clipboard.sourceId === track.id ? ' copied' : '');
+  cell.setAttribute('role', 'listitem');
+
+  cell.draggable = !['offset', 'speed', 'volume'].includes(currentMode);
+  cell.addEventListener('dragstart', () => { dragSrcId = track.id; cell.classList.add('dragging'); });
+  cell.addEventListener('dragend', () => { cell.classList.remove('dragging'); });
+  setupDragTarget(cell, () => track.row, () => track.col);
 
   if (currentMode === 'volume') {
     cell.appendChild(buildVolumeControl(track));
@@ -453,7 +526,7 @@ function buildCell(track, index) {
     cell.appendChild(buildModuleSvg(track));
   }
 
-  cell.addEventListener('click', (e) => onCellClick(track, index, e));
+  cell.addEventListener('click', () => onCellClick(track));
   return cell;
 }
 
@@ -654,7 +727,7 @@ function applyVisualState(track, now) {
 
 // ---------- Cell click dispatch ----------
 
-function onCellClick(track, index) {
+function onCellClick(track) {
   if (!audioCtx) return;
   switch (currentMode) {
     case 'playpause':
@@ -667,7 +740,7 @@ function onCellClick(track, index) {
       break;
     case 'initdel':
       if (track.buffer) resetTrack(track);
-      else removeTrack(index);
+      else removeTrack(track);
       render();
       break;
     case 'copypaste':
@@ -720,13 +793,13 @@ function pasteInto(track, clip) {
 function tick() {
   if (audioCtx) {
     const now = audioCtx.currentTime;
-    for (const t of cells) {
+    for (const t of tracks) {
       if (t.queuedAction && now >= t.queuedTime) executeQueued(t);
     }
     if (masterStartTime !== null && globalNextBoundary !== null && now >= globalNextBoundary) {
       resyncAll(now);
     }
-    for (const t of cells) applyVisualState(t, now);
+    for (const t of tracks) applyVisualState(t, now);
   }
   requestAnimationFrame(tick);
 }
@@ -757,14 +830,18 @@ function downloadBlob(data, mime, filename) {
 }
 
 exportBtn.addEventListener('click', () => {
+  const base = sanitizeFilename(projectName);
   const project = {
     version: 1,
+    name: projectName,
     unitLength,
-    tracks: cells.map((t) => {
-      if (!t.buffer) return { empty: true };
+    tracks: tracks.map((t) => {
+      if (!t.buffer) return { empty: true, row: t.row, col: t.col };
       const wav = encodeWavMono16(t.buffer.getChannelData(0), t.buffer.sampleRate);
       return {
         empty: false,
+        row: t.row,
+        col: t.col,
         lengthUnits: t.lengthUnits,
         autoPhaseOffset: t.autoPhaseOffset,
         userOffset: t.userOffset,
@@ -775,13 +852,13 @@ exportBtn.addEventListener('click', () => {
       };
     }),
   };
-  downloadBlob(JSON.stringify(project), 'application/json', 'loop-de-loop-project.json');
+  downloadBlob(JSON.stringify(project), 'application/json', `${base}.json`);
 
   let delay = 300;
-  cells.forEach((t, i) => {
+  tracks.forEach((t, i) => {
     if (!t.buffer) return;
     const wav = encodeWavMono16(t.buffer.getChannelData(0), t.buffer.sampleRate);
-    setTimeout(() => downloadBlob(wav, 'audio/wav', `loop-de-loop-track-${i + 1}.wav`), delay);
+    setTimeout(() => downloadBlob(wav, 'audio/wav', `${base}-track-${i + 1}.wav`), delay);
     delay += 300;
   });
 });
@@ -804,15 +881,24 @@ importInput.addEventListener('change', async () => {
     }
   }
 
-  for (const t of cells) { hardStop(t); if (t.gainNode) try { t.gainNode.disconnect(); } catch (e) {} }
-  cells = [];
+  for (const t of tracks) { hardStop(t); if (t.gainNode) try { t.gainNode.disconnect(); } catch (e) {} }
+  tracks = [];
   unitLength = project.unitLength;
   masterStartTime = null;
   globalMegacycle = null;
   globalNextBoundary = null;
 
+  if (project.name) {
+    projectName = project.name;
+    projectNameInput.value = projectName;
+  }
+
+  let nextRow = 0;
   for (const entry of project.tracks) {
-    const track = makeTrack();
+    const row = Number.isFinite(entry.row) ? entry.row : nextRow;
+    const col = Number.isFinite(entry.col) ? entry.col : 0;
+    nextRow = Math.max(nextRow, row + 1);
+    const track = makeTrack(row, col);
     ensureGain(track);
     if (!entry.empty) {
       const wavBuffer = base64ToArrayBuffer(entry.audioBase64);
@@ -825,12 +911,12 @@ importInput.addEventListener('change', async () => {
       track.volume = entry.volume;
       track.gainNode.gain.value = track.volume;
     }
-    cells.push(track);
+    tracks.push(track);
   }
-  if (cells.length === 0) cells.push(makeTrack());
+  if (tracks.length === 0) tracks.push(makeTrack(0, 0));
 
   masterStartTime = audioCtx.currentTime;
-  for (const t of cells) if (t.buffer) doStartPlayback(t, masterStartTime);
+  for (const t of tracks) if (t.buffer) doStartPlayback(t, masterStartTime);
   importInput.value = '';
   render();
 });
