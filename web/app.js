@@ -25,7 +25,7 @@ let recorderSilentGain = null;
 let recordingTrack = null;
 
 let unitLength = null;       // seconds; duration of one "unit" (first recorded track)
-let masterStartTime = null;  // audioCtx time anchor for the shared transport
+let masterStartTime = null;  // audioCtx time anchor for the shared transport, fixed for the project's life
 let globalMegacycle = null;
 let globalNextBoundary = null;
 
@@ -35,6 +35,9 @@ let zoomedId = null;
 let dragSrcIndex = null;
 
 function mod(a, n) { return ((a % n) + n) % n; }
+function gcd(a, b) { a = Math.abs(a); b = Math.abs(b); while (b) { [a, b] = [b, a % b]; } return a || 1; }
+function lcm2(a, b) { return (a / gcd(a, b)) * b; }
+function lcmAll(nums) { return nums.reduce((acc, n) => lcm2(acc, n), 1); }
 
 function makeTrack() {
   return {
@@ -53,6 +56,9 @@ function makeTrack() {
     recordStartTime: null,
     loopAnchorTime: null,
     pausedPhase: 0,
+    queuedAction: null,       // null | 'play' | 'stopPlay' | 'record' | 'endRecord'
+    queuedTime: null,
+    queuedLengthUnits: null,
     el: null,
   };
 }
@@ -94,6 +100,33 @@ function ensureGain(track) {
     track.gainNode.gain.value = track.volume;
     track.gainNode.connect(audioCtx.destination);
   }
+}
+
+// ---------- Sync engine ----------
+//
+// masterStartTime + unitLength define a permanent grid, fixed once the first
+// loop is recorded. Every track's length is a whole multiple of unitLength.
+// Starting play/record is free the instant nothing else is playing; if other
+// tracks are playing, the action is queued until the next moment all of them
+// are simultaneously back at their own 12 o'clock (a common multiple of their
+// lengths). Ending playback or a recording is always queued the same way,
+// this time including the track's own length too, so it never gets cut mid
+// cycle and its resulting length is guaranteed to nest with whatever else is
+// playing.
+
+function activePlayingLengths(excludeTrack) {
+  const lens = [];
+  for (const t of cells) {
+    if (t !== excludeTrack && t.buffer && t.playing) lens.push(t.lengthUnits);
+  }
+  return lens;
+}
+
+function nextBoundaryForLengths(now, lengths) {
+  if (!lengths.length) return now;
+  const period = lcmAll(lengths) * unitLength;
+  const k = Math.ceil((now - masterStartTime) / period - 1e-9);
+  return masterStartTime + Math.max(k, 0) * period;
 }
 
 function currentMegacycle() {
@@ -145,28 +178,32 @@ function trackPhase01(track, now) {
   return phase / bufDur;
 }
 
-function startPlayback(track) {
+// ---------- Immediate actions (only ever called at the exact resolved time) ----------
+
+function doStartPlayback(track, atTime) {
   if (!track.buffer) return;
   ensureGain(track);
-  if (masterStartTime === null) masterStartTime = audioCtx.currentTime;
+  if (masterStartTime === null) masterStartTime = atTime;
   track.playing = true;
-  resyncAll();
+  resyncAll(atTime);
 }
 
-function stopPlayback(track) {
+function doStopPlayback(track, atTime) {
   if (track.sourceNode) {
-    try { track.sourceNode.stop(); } catch (e) { /* noop */ }
+    try { track.sourceNode.stop(atTime); } catch (e) { /* noop */ }
     track.sourceNode = null;
   }
-  if (track.playing && audioCtx) track.pausedPhase = trackPhase01(track, audioCtx.currentTime) * track.buffer.duration;
+  if (track.buffer) track.pausedPhase = trackPhase01(track, atTime) * track.buffer.duration;
   track.playing = false;
 }
 
-function togglePlayPause(track) {
-  if (!track.buffer) return;
-  if (track.playing) stopPlayback(track);
-  else startPlayback(track);
-  render();
+function doStartRecording(track, atTime) {
+  if (track.playing) doStopPlayback(track, atTime);
+  track.recordChunks = [];
+  track.recordStartTime = atTime;
+  track.recording = true;
+  recordingTrack = track;
+  recorderNode.port.postMessage('start');
 }
 
 function concatFloat32(chunks) {
@@ -178,19 +215,7 @@ function concatFloat32(chunks) {
   return out;
 }
 
-function startRecording(track) {
-  if (!audioCtx) return;
-  if (recordingTrack && recordingTrack !== track) stopRecording(recordingTrack);
-  if (track.playing) stopPlayback(track);
-  track.recordChunks = [];
-  track.recordStartTime = audioCtx.currentTime;
-  track.recording = true;
-  recordingTrack = track;
-  recorderNode.port.postMessage('start');
-  render();
-}
-
-function stopRecording(track) {
+function finalizeRecording(track, atTime) {
   recorderNode.port.postMessage('stop');
   track.recording = false;
   recordingTrack = null;
@@ -198,19 +223,20 @@ function stopRecording(track) {
   const raw = concatFloat32(track.recordChunks);
   track.recordChunks = [];
   const sampleRate = audioCtx.sampleRate;
-  const rawDuration = raw.length / sampleRate;
 
-  let lengthUnits, quantizedSamples;
+  let lengthUnits;
   const isFirstEver = unitLength === null;
   if (isFirstEver) {
-    unitLength = Math.max(rawDuration, 0.05);
+    unitLength = Math.max(raw.length / sampleRate, 0.05);
     lengthUnits = 1;
-    quantizedSamples = raw.length;
+    masterStartTime = track.recordStartTime;
+    track.autoPhaseOffset = 0;
   } else {
-    lengthUnits = Math.max(1, Math.round(rawDuration / unitLength));
-    quantizedSamples = Math.round(lengthUnits * unitLength * sampleRate);
+    lengthUnits = track.queuedLengthUnits || Math.max(1, Math.round((raw.length / sampleRate) / unitLength));
+    track.autoPhaseOffset = mod(track.recordStartTime - masterStartTime, unitLength);
   }
 
+  const quantizedSamples = Math.round(lengthUnits * unitLength * sampleRate);
   const finalData = new Float32Array(quantizedSamples);
   finalData.set(raw.subarray(0, Math.min(raw.length, quantizedSamples)));
   const audioBuffer = audioCtx.createBuffer(1, quantizedSamples, sampleRate);
@@ -220,27 +246,112 @@ function stopRecording(track) {
   track.lengthUnits = lengthUnits;
   track.userOffset = 0;
   track.speedFactor = 1;
+  track.queuedLengthUnits = null;
 
-  if (masterStartTime === null) {
-    masterStartTime = audioCtx.currentTime;
-    track.autoPhaseOffset = 0;
-  } else {
-    track.autoPhaseOffset = mod(track.recordStartTime - masterStartTime, unitLength);
-  }
-
-  startPlayback(track);
+  doStartPlayback(track, atTime);
   render();
 }
 
+// ---------- Queued (launch-quantized) requests ----------
+
+function cancelQueued(track) {
+  track.queuedAction = null;
+  track.queuedTime = null;
+  track.queuedLengthUnits = null;
+}
+
+function executeQueued(track) {
+  const action = track.queuedAction;
+  const time = track.queuedTime;
+  track.queuedAction = null;
+  track.queuedTime = null;
+  if (action === 'play') doStartPlayback(track, time);
+  else if (action === 'stopPlay') doStopPlayback(track, time);
+  else if (action === 'record') doStartRecording(track, time);
+  else if (action === 'endRecord') finalizeRecording(track, time);
+}
+
+function requestPlay(track) {
+  if (!track.buffer || track.queuedAction) return;
+  const now = audioCtx.currentTime;
+  const others = activePlayingLengths(track);
+  if (!others.length) { doStartPlayback(track, now); return; }
+  track.queuedAction = 'play';
+  track.queuedTime = nextBoundaryForLengths(now, others);
+}
+
+function requestStopPlay(track) {
+  if (!track.playing || track.queuedAction) return;
+  const now = audioCtx.currentTime;
+  const lens = activePlayingLengths(track);
+  lens.push(track.lengthUnits);
+  track.queuedAction = 'stopPlay';
+  track.queuedTime = nextBoundaryForLengths(now, lens);
+}
+
+function requestRecordStart(track) {
+  if (track.queuedAction || recordingTrack) return;
+  const now = audioCtx.currentTime;
+  if (unitLength === null) { doStartRecording(track, now); return; }
+  const others = activePlayingLengths(track);
+  if (!others.length) { doStartRecording(track, now); return; }
+  track.queuedAction = 'record';
+  track.queuedTime = nextBoundaryForLengths(now, others);
+}
+
+function requestRecordStop(track) {
+  if (!track.recording || track.queuedAction) return;
+  const now = audioCtx.currentTime;
+  if (unitLength === null) { finalizeRecording(track, now); return; }
+  const others = activePlayingLengths(track);
+  let t, n;
+  if (!others.length) {
+    n = Math.max(1, Math.ceil((now - track.recordStartTime) / unitLength - 1e-9));
+    t = track.recordStartTime + n * unitLength;
+  } else {
+    const period = lcmAll(others) * unitLength;
+    const k = Math.max(1, Math.ceil((now - masterStartTime) / period - 1e-9));
+    t = masterStartTime + k * period;
+    n = Math.round((t - track.recordStartTime) / unitLength);
+  }
+  track.queuedAction = 'endRecord';
+  track.queuedTime = t;
+  track.queuedLengthUnits = n;
+}
+
+function togglePlayPause(track) {
+  if (track.queuedAction === 'play' || track.queuedAction === 'stopPlay') { cancelQueued(track); return; }
+  if (!track.buffer) return;
+  if (track.playing) requestStopPlay(track);
+  else requestPlay(track);
+}
+
 function togglePlayRec(track) {
-  if (track.recording) { stopRecording(track); return; }
-  if (!track.buffer) { startRecording(track); return; }
-  togglePlayPause(track);
+  if (track.queuedAction === 'record' || track.queuedAction === 'endRecord') { cancelQueued(track); return; }
+  if (track.recording) { requestRecordStop(track); return; }
+  if (track.buffer) { togglePlayPause(track); return; }
+  requestRecordStart(track);
+}
+
+// ---------- Hard stop (used by destructive/structural edits, not queued) ----------
+
+function hardStop(track) {
+  cancelQueued(track);
+  if (track.recording) {
+    recorderNode.port.postMessage('stop');
+    track.recording = false;
+    recordingTrack = null;
+    track.recordChunks = [];
+  }
+  if (track.sourceNode) {
+    try { track.sourceNode.stop(); } catch (e) { /* noop */ }
+    track.sourceNode = null;
+  }
+  track.playing = false;
 }
 
 function resetTrack(track) {
-  if (track.recording) stopRecording(track);
-  stopPlayback(track);
+  hardStop(track);
   track.buffer = null;
   track.lengthUnits = null;
   track.autoPhaseOffset = 0;
@@ -253,8 +364,7 @@ function resetTrack(track) {
 
 function removeTrack(index) {
   const track = cells[index];
-  if (track.recording) stopRecording(track);
-  stopPlayback(track);
+  hardStop(track);
   if (track.gainNode) { try { track.gainNode.disconnect(); } catch (e) {} }
   cells.splice(index, 1);
   if (!cells.some((t) => t.buffer)) {
@@ -322,8 +432,8 @@ function buildCell(track, index) {
   cell.className = 'cell' + (track.buffer ? '' : ' empty') + (clipboard && clipboard.sourceId === track.id ? ' copied' : '');
   cell.setAttribute('role', 'listitem');
 
-  cell.draggable = currentMode !== 'offset' && currentMode !== 'speed';
-  cell.addEventListener('dragstart', (e) => { dragSrcIndex = index; cell.classList.add('dragging'); });
+  cell.draggable = !['offset', 'speed', 'volume'].includes(currentMode);
+  cell.addEventListener('dragstart', () => { dragSrcIndex = index; cell.classList.add('dragging'); });
   cell.addEventListener('dragend', () => { cell.classList.remove('dragging'); });
   cell.addEventListener('dragover', (e) => { e.preventDefault(); cell.classList.add('drag-over'); });
   cell.addEventListener('dragleave', () => cell.classList.remove('drag-over'));
@@ -353,11 +463,16 @@ function buildVolumeControl(track) {
   const input = document.createElement('input');
   input.type = 'range';
   input.className = 'volume-slider';
+  input.draggable = false;
   input.min = '0';
   input.max = '1.5';
   input.step = '0.01';
   input.value = String(track.volume);
-  input.addEventListener('click', (e) => e.stopPropagation());
+  const stop = (e) => e.stopPropagation();
+  input.addEventListener('click', stop);
+  input.addEventListener('mousedown', stop);
+  input.addEventListener('touchstart', stop, { passive: true });
+  input.addEventListener('dragstart', (e) => e.preventDefault());
   input.addEventListener('input', () => {
     track.volume = parseFloat(input.value);
     ensureGain(track);
@@ -387,6 +502,20 @@ function buildModuleSvg(track) {
   });
   svg.appendChild(pos);
 
+  // Quarter-cycle tick marks: shown while recording to hint that the loop
+  // can only actually end on one of these marks (or 12 o'clock), not just
+  // whenever the ring happens to complete a lap.
+  const ticks = svgEl('g', { class: 'quarter-ticks' });
+  ticks.style.opacity = '0';
+  [0, 90, 180, 270].forEach((deg) => {
+    const rad = (deg * Math.PI) / 180;
+    const r1 = 36, r2 = 44;
+    const x1 = 50 + r1 * Math.sin(rad), y1 = 50 - r1 * Math.cos(rad);
+    const x2 = 50 + r2 * Math.sin(rad), y2 = 50 - r2 * Math.cos(rad);
+    ticks.appendChild(svgEl('line', { x1, y1, x2, y2 }));
+  });
+  svg.appendChild(ticks);
+
   let strobeGroup = null;
   if (currentMode === 'speed' && track.buffer) {
     strobeGroup = svgEl('g', { class: 'speed-strobe' });
@@ -401,18 +530,14 @@ function buildModuleSvg(track) {
     svg.appendChild(strobeGroup);
   }
 
-  const core = svgEl('circle', {
-    class: 'core-circle core-btn' + (track.buffer ? ' filled' : ''),
-    cx: 50, cy: 50, r: 22,
-  });
+  const core = svgEl('circle', { class: 'core-circle core-btn', cx: 50, cy: 50, r: 22 });
   svg.appendChild(core);
 
   const label = svgEl('text', { class: 'core-label', x: 50, y: 52 });
   svg.appendChild(label);
 
-  let handle = null;
   if (currentMode === 'offset' && track.buffer) {
-    handle = svgEl('circle', { class: 'offset-handle', cx: 50, cy: 8, r: 5 });
+    const handle = svgEl('circle', { class: 'offset-handle', cx: 50, cy: 8, r: 5 });
     svg.appendChild(handle);
     attachDrag(svg, handle, (angleDeg) => {
       const frac = angleDeg / 360;
@@ -429,18 +554,11 @@ function buildModuleSvg(track) {
       signed = Math.max(-180, Math.min(180, signed));
       track.speedFactor = Math.pow(2, signed / 90);
       if (track.playing) resyncAll();
-      updateLabel();
     });
   }
 
-  function updateLabel() {
-    if (currentMode === 'speed' && track.buffer) label.textContent = track.speedFactor.toFixed(2) + 'x';
-    else if (track.buffer && track.lengthUnits) label.textContent = track.lengthUnits + 'u';
-    else label.textContent = '';
-  }
-  updateLabel();
-
-  track.el = { svg, pos, circumference, strobeGroup, core, label };
+  track.el = { svg, pos, circumference, strobeGroup, core, label, ticks };
+  applyVisualState(track, audioCtx ? audioCtx.currentTime : 0);
   return svg;
 }
 
@@ -454,7 +572,6 @@ function attachDrag(svg, handle, onAngle) {
     const dy = clientY - cy;
     let angle = Math.atan2(dx, -dy) * (180 / Math.PI);
     angle = mod(angle, 360);
-    const r = 42 * (rect.width / 100);
     handle.setAttribute('cx', 50 + 42 * Math.sin(angle * Math.PI / 180));
     handle.setAttribute('cy', 50 - 42 * Math.cos(angle * Math.PI / 180));
     onAngle(angle);
@@ -480,16 +597,73 @@ function attachDrag(svg, handle, onAngle) {
   window.addEventListener('touchend', onUp);
 }
 
+// ---------- Per-frame visual state (ring position, recording/queued hints) ----------
+
+function fmtCountdown(now, until) {
+  return Math.max(0, until - now).toFixed(1) + 's';
+}
+
+function applyVisualState(track, now) {
+  const el = track.el;
+  if (!el) return;
+
+  el.core.classList.remove('filled', 'rec-pulse', 'queued-pulse', 'end-queued');
+  let frac = 0;
+  let showTicks = false;
+  let labelText = '';
+
+  if (track.queuedAction === 'play') {
+    el.core.classList.add('queued-pulse');
+    frac = track.buffer ? track.pausedPhase / track.buffer.duration : 0;
+    labelText = '▶ ' + fmtCountdown(now, track.queuedTime);
+  } else if (track.queuedAction === 'record') {
+    el.core.classList.add('queued-pulse');
+    labelText = '● ' + fmtCountdown(now, track.queuedTime);
+  } else if (track.queuedAction === 'stopPlay') {
+    el.core.classList.add('queued-pulse', 'filled');
+    frac = trackPhase01(track, now);
+    labelText = '⏸ ' + fmtCountdown(now, track.queuedTime);
+  } else if (track.recording || track.queuedAction === 'endRecord') {
+    showTicks = true;
+    el.core.classList.add('rec-pulse');
+    if (track.queuedAction === 'endRecord') el.core.classList.add('end-queued');
+    if (unitLength) {
+      frac = mod(now - track.recordStartTime, unitLength) / unitLength;
+      const elapsedUnits = Math.floor((now - track.recordStartTime) / unitLength) + 1;
+      labelText = track.queuedAction === 'endRecord'
+        ? 'end ' + fmtCountdown(now, track.queuedTime)
+        : elapsedUnits + '…';
+    } else {
+      labelText = 'REC';
+    }
+  } else if (track.buffer) {
+    el.core.classList.add('filled');
+    frac = trackPhase01(track, now);
+    labelText = currentMode === 'speed' ? track.speedFactor.toFixed(2) + 'x'
+      : (track.lengthUnits ? track.lengthUnits + 'u' : '');
+  }
+
+  el.label.textContent = labelText;
+  el.pos.setAttribute('stroke-dashoffset', String(el.circumference * (1 - frac)));
+  el.ticks.style.opacity = showTicks ? '1' : '0';
+  if (el.strobeGroup) {
+    const wobble = (track.speedFactor - 1) * now * 60;
+    el.strobeGroup.setAttribute('transform', `rotate(${wobble} 50 50)`);
+  }
+}
+
 // ---------- Cell click dispatch ----------
 
-function onCellClick(track, index, e) {
+function onCellClick(track, index) {
   if (!audioCtx) return;
   switch (currentMode) {
     case 'playpause':
       togglePlayPause(track);
+      render();
       break;
     case 'playrec':
       togglePlayRec(track);
+      render();
       break;
     case 'initdel':
       if (track.buffer) resetTrack(track);
@@ -528,8 +702,7 @@ function snapshotTrack(track) {
 }
 
 function pasteInto(track, clip) {
-  if (track.recording) stopRecording(track);
-  stopPlayback(track);
+  hardStop(track);
   const d = clip.data;
   track.buffer = d.buffer;
   track.lengthUnits = d.lengthUnits;
@@ -539,7 +712,7 @@ function pasteInto(track, clip) {
   track.volume = d.volume;
   ensureGain(track);
   track.gainNode.gain.value = track.volume;
-  if (track.buffer) startPlayback(track);
+  if (track.buffer) requestPlay(track);
 }
 
 // ---------- Animation loop ----------
@@ -547,19 +720,13 @@ function pasteInto(track, clip) {
 function tick() {
   if (audioCtx) {
     const now = audioCtx.currentTime;
+    for (const t of cells) {
+      if (t.queuedAction && now >= t.queuedTime) executeQueued(t);
+    }
     if (masterStartTime !== null && globalNextBoundary !== null && now >= globalNextBoundary) {
       resyncAll(now);
     }
-    for (const t of cells) {
-      if (!t.el) continue;
-      const frac = trackPhase01(t, now);
-      const offset = t.el.circumference * (1 - frac);
-      t.el.pos.setAttribute('stroke-dashoffset', String(offset));
-      if (t.el.strobeGroup) {
-        const wobble = (t.speedFactor - 1) * now * 60;
-        t.el.strobeGroup.setAttribute('transform', `rotate(${wobble} 50 50)`);
-      }
-    }
+    for (const t of cells) applyVisualState(t, now);
   }
   requestAnimationFrame(tick);
 }
@@ -578,6 +745,16 @@ startBtn.addEventListener('click', async () => {
 });
 
 // ---------- Export / Import ----------
+
+function downloadBlob(data, mime, filename) {
+  const blob = new Blob([data], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 exportBtn.addEventListener('click', () => {
   const project = {
@@ -598,13 +775,15 @@ exportBtn.addEventListener('click', () => {
       };
     }),
   };
-  const blob = new Blob([JSON.stringify(project)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'loop-de-loop-project.json';
-  a.click();
-  URL.revokeObjectURL(url);
+  downloadBlob(JSON.stringify(project), 'application/json', 'loop-de-loop-project.json');
+
+  let delay = 300;
+  cells.forEach((t, i) => {
+    if (!t.buffer) return;
+    const wav = encodeWavMono16(t.buffer.getChannelData(0), t.buffer.sampleRate);
+    setTimeout(() => downloadBlob(wav, 'audio/wav', `loop-de-loop-track-${i + 1}.wav`), delay);
+    delay += 300;
+  });
 });
 
 importBtn.addEventListener('click', () => importInput.click());
@@ -625,7 +804,7 @@ importInput.addEventListener('change', async () => {
     }
   }
 
-  for (const t of cells) { stopPlayback(t); if (t.gainNode) try { t.gainNode.disconnect(); } catch (e) {} }
+  for (const t of cells) { hardStop(t); if (t.gainNode) try { t.gainNode.disconnect(); } catch (e) {} }
   cells = [];
   unitLength = project.unitLength;
   masterStartTime = null;
@@ -650,7 +829,8 @@ importInput.addEventListener('change', async () => {
   }
   if (cells.length === 0) cells.push(makeTrack());
 
-  for (const t of cells) if (t.buffer) startPlayback(t);
+  masterStartTime = audioCtx.currentTime;
+  for (const t of cells) if (t.buffer) doStartPlayback(t, masterStartTime);
   importInput.value = '';
   render();
 });

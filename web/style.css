@@ -26,6 +26,11 @@ html, body {
   overscroll-behavior: none;
 }
 
+body {
+  display: flex;
+  flex-direction: column;
+}
+
 body.mode-playpause { --fg: #ffffff; --ring: var(--color-playpause); }
 body.mode-playrec { --fg: var(--color-playrec); --ring: var(--color-playrec); }
 body.mode-initdel { --fg: var(--color-initdel); --ring: var(--color-initdel); }
@@ -62,6 +67,7 @@ button:active { background: var(--fg); color: var(--bg); }
 .error:empty { display: none; }
 
 #toolbar {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -69,11 +75,15 @@ button:active { background: var(--fg); color: var(--bg); }
   padding: .6em;
   border-bottom: 1px solid var(--dim);
   flex-wrap: wrap;
+  background: var(--bg);
 }
 
 #fileButtons { display: flex; gap: .5em; }
 
 #grid {
+  flex: 1 1 auto;
+  overflow: auto;
+  width: 100%;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(var(--cell-min), 1fr));
   gap: 10px;
@@ -116,7 +126,23 @@ button:active { background: var(--fg); color: var(--bg); }
 .core-btn { cursor: pointer; }
 .core-circle { stroke: var(--fg); stroke-width: 3; fill: #000; }
 .core-circle.filled { fill: var(--fg); }
-.core-label { fill: var(--fg); font-size: 11px; text-anchor: middle; dominant-baseline: middle; pointer-events: none; }
+.core-circle.rec-pulse { fill: var(--color-playrec); stroke: var(--color-playrec); animation: recPulse 1s ease-in-out infinite; }
+.core-circle.end-queued { stroke-dasharray: 4 3; animation: recPulse .35s ease-in-out infinite; }
+.core-circle.queued-pulse { stroke-dasharray: 3 3; animation: queuedPulse .6s ease-in-out infinite; }
+.core-label { fill: var(--fg); font-size: 9px; text-anchor: middle; dominant-baseline: middle; pointer-events: none; }
+.core-circle.rec-pulse ~ .core-label,
+.core-circle.filled ~ .core-label { fill: var(--bg); }
+
+@keyframes recPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .5; }
+}
+@keyframes queuedPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .3; }
+}
+
+.quarter-ticks line { stroke: var(--ring); stroke-width: 2; opacity: .9; }
 
 .offset-handle { fill: var(--fg); cursor: grab; }
 .offset-handle:active { cursor: grabbing; }
@@ -139,6 +165,7 @@ button:active { background: var(--fg); color: var(--bg); }
   border: none;
   transform: rotate(-90deg);
   transform-origin: center;
+  touch-action: none;
 }
 .volume-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
@@ -162,14 +189,19 @@ button:active { background: var(--fg); color: var(--bg); }
 .cell.drag-over { outline: 2px dashed var(--fg); }
 
 #zoomLayer {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
-  background: var(--bg);
+  flex: 1 1 auto;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 20px;
 }
 #zoomLayer[hidden] { display: none; }
-#zoomLayer .cell { width: 100%; height: 100%; aspect-ratio: auto; }
+#zoomLayer .cell {
+  width: min(90vw, 90vh);
+  height: min(90vw, 90vh);
+  aspect-ratio: 1 / 1;
+}
 
 @media (max-width: 480px) {
   :root { --cell-min: 140px; }
