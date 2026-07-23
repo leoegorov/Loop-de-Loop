@@ -106,6 +106,7 @@ button:active { background: var(--fg); color: var(--bg); }
   justify-content: start;
   align-content: start;
 }
+#grid[hidden] { display: none; }
 
 .cell {
   position: relative;
