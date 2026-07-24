@@ -70,12 +70,47 @@ button:active { background: var(--fg); color: var(--bg); }
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: .5em;
   padding: .6em;
   border-bottom: 1px solid var(--dim);
   flex-wrap: wrap;
   background: var(--bg);
+}
+
+#menuBtn { font-size: 1.1em; line-height: 1; padding: .35em .6em; }
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, .7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.modal-overlay[hidden] { display: none; }
+
+.modal-box {
+  position: relative;
+  background: var(--bg);
+  border: 1px solid var(--fg);
+  border-radius: 12px;
+  padding: 2em 1.5em 1.5em;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1em;
+  min-width: 260px;
+  max-width: 90vw;
+}
+
+.modal-close {
+  position: absolute;
+  top: .4em;
+  right: .4em;
+  padding: .2em .5em;
+  border: none;
 }
 
 #fileButtons { display: flex; gap: .5em; }
@@ -84,8 +119,6 @@ button:active { background: var(--fg); color: var(--bg); }
   display: flex;
   align-items: center;
   gap: .4em;
-  flex: 1 1 auto;
-  justify-content: center;
   min-width: 0;
 }
 #projectNameInput {
@@ -232,5 +265,4 @@ body.mode-initdel .cell.module:hover {
 
 @media (max-width: 480px) {
   #toolbar { padding: .5em; flex-wrap: wrap; }
-  #projectNameWrap { order: 3; flex-basis: 100%; }
 }

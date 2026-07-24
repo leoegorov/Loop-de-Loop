@@ -13,11 +13,11 @@ python3 -m http.server 5173
 
 Open http://localhost:5173 and click **Enable Mic & Audio**.
 
-## Project name
+## Project menu
 
-The toolbar's center field names the project; a random name is generated on
-load, and the 🎲 button rerolls it. Export uses this name for every
-downloaded file.
+The ☰ button to the left of the mode dropdown opens a modal with the project
+name field (a random name is generated on load, 🎲 rerolls it), Export, and
+Import. Export uses the project name for every downloaded file.
 
 ## Grid
 

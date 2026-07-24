@@ -29,6 +29,9 @@ const importBtn = document.getElementById('importBtn');
 const importInput = document.getElementById('importInput');
 const projectNameInput = document.getElementById('projectNameInput');
 const randomNameBtn = document.getElementById('randomNameBtn');
+const menuBtn = document.getElementById('menuBtn');
+const projectModal = document.getElementById('projectModal');
+const modalCloseBtn = document.getElementById('modalCloseBtn');
 
 let currentMode = 'playpause';
 let uidCounter = 1;
@@ -424,6 +427,17 @@ window.addEventListener('keydown', (e) => {
   if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
   const key = e.key.toLowerCase();
   if (SHORTCUTS[key]) setMode(SHORTCUTS[key]);
+});
+
+// ---------- Project menu modal ----------
+
+menuBtn.addEventListener('click', () => { projectModal.hidden = false; });
+modalCloseBtn.addEventListener('click', () => { projectModal.hidden = true; });
+projectModal.addEventListener('click', (e) => {
+  if (e.target === projectModal) projectModal.hidden = true;
+});
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !projectModal.hidden) projectModal.hidden = true;
 });
 
 // ---------- Project name ----------

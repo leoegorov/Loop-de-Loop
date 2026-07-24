@@ -14,6 +14,8 @@
   </div>
 
   <header id="toolbar">
+    <button id="menuBtn" type="button" aria-label="Project menu" title="Project menu">☰</button>
+
     <select id="modeSelect" aria-label="Editing mode">
       <option value="playpause">▶ Play / Pause (P)</option>
       <option value="playrec">● Play / Rec (R)</option>
@@ -24,22 +26,28 @@
       <option value="copypaste">⧉ Copy / Paste (C)</option>
       <option value="zoom">⤢ Zoom (Z)</option>
     </select>
-
-    <div id="projectNameWrap">
-      <input id="projectNameInput" type="text" aria-label="Project name" spellcheck="false" maxlength="60">
-      <button id="randomNameBtn" type="button" title="Random project name">🎲</button>
-    </div>
-
-    <div id="fileButtons">
-      <button id="exportBtn" type="button" title="Export project + audio">Export</button>
-      <button id="importBtn" type="button" title="Import project + audio">Import</button>
-      <input id="importInput" type="file" accept="application/json" hidden>
-    </div>
   </header>
 
   <main id="grid" role="list"></main>
 
   <div id="zoomLayer" hidden></div>
+
+  <div id="projectModal" class="modal-overlay" hidden>
+    <div class="modal-box">
+      <button id="modalCloseBtn" type="button" class="modal-close" aria-label="Close">✕</button>
+
+      <div id="projectNameWrap">
+        <input id="projectNameInput" type="text" aria-label="Project name" spellcheck="false" maxlength="60">
+        <button id="randomNameBtn" type="button" title="Random project name">🎲</button>
+      </div>
+
+      <div id="fileButtons">
+        <button id="exportBtn" type="button" title="Export project + audio">Export</button>
+        <button id="importBtn" type="button" title="Import project + audio">Import</button>
+        <input id="importInput" type="file" accept="application/json" hidden>
+      </div>
+    </div>
+  </div>
 
   <script type="module" src="app.js"></script>
 </body>
