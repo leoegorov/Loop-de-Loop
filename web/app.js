@@ -83,6 +83,30 @@ function isZoomInAt(clientX, clientY) {
   return zoomDistance(clientX, clientY) < ZOOM_CENTER_RADIUS;
 }
 
+// Custom magnifying-glass cursors (native zoom-in/zoom-out glyphs are too
+// subtle/inconsistent across browsers to read as "zoom" at a glance).
+function magnifierCursor(zoomIn) {
+  const sign = zoomIn
+    ? '<line x1="11" y1="7" x2="11" y2="15" stroke="#7fdcff" stroke-width="2.5" stroke-linecap="round"/>'
+    : '';
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 28 28">`
+    + `<circle cx="11" cy="11" r="8" fill="rgba(0,0,0,.55)" stroke="#7fdcff" stroke-width="2.5"/>`
+    + `<line x1="17" y1="17" x2="25" y2="25" stroke="#7fdcff" stroke-width="3" stroke-linecap="round"/>`
+    + `<line x1="7" y1="11" x2="15" y2="11" stroke="#7fdcff" stroke-width="2.5" stroke-linecap="round"/>`
+    + `${sign}</svg>`;
+  const fallback = zoomIn ? 'zoom-in' : 'zoom-out';
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 11 11, ${fallback}`;
+}
+
+const ZOOM_IN_CURSOR = magnifierCursor(true);
+const ZOOM_OUT_CURSOR = magnifierCursor(false);
+let lastMouseX = window.innerWidth / 2;
+let lastMouseY = window.innerHeight / 2;
+
+function updateZoomCursor(clientX, clientY) {
+  body.style.cursor = isZoomInAt(clientX, clientY) ? ZOOM_IN_CURSOR : ZOOM_OUT_CURSOR;
+}
+
 function mod(a, n) { return ((a % n) + n) % n; }
 function gcd(a, b) { a = Math.abs(a); b = Math.abs(b); while (b) { [a, b] = [b, a % b]; } return a || 1; }
 function lcm2(a, b) { return (a / gcd(a, b)) * b; }
@@ -437,11 +461,15 @@ function isReachableSlot(row, col) {
 
 // ---------- UI: mode handling ----------
 
+function updateBodyClasses() {
+  body.className = 'mode-' + currentMode + (clipboard ? ' clipboard-active' : '');
+}
+
 function setMode(mode) {
   currentMode = mode;
   modeSelect.value = mode;
-  body.className = 'mode-' + mode;
-  if (mode !== 'zoom') body.style.cursor = '';
+  if (mode === 'zoom') updateZoomCursor(lastMouseX, lastMouseY);
+  else body.style.cursor = '';
   render();
 }
 
@@ -456,10 +484,12 @@ window.addEventListener('keydown', (e) => {
 
 // Zoom mode: clicking near the middle of the screen zooms in (fewer,
 // larger cells); clicking near the edges zooms out (more, smaller cells).
-// The cursor previews which one a click will do.
+// The cursor (a magnifying glass with +/-) previews which one a click will do.
 window.addEventListener('mousemove', (e) => {
+  lastMouseX = e.clientX;
+  lastMouseY = e.clientY;
   if (currentMode !== 'zoom') return;
-  body.style.cursor = isZoomInAt(e.clientX, e.clientY) ? 'zoom-in' : 'zoom-out';
+  updateZoomCursor(e.clientX, e.clientY);
 });
 gridEl.addEventListener('click', (e) => {
   if (currentMode !== 'zoom') return;
@@ -492,6 +522,7 @@ randomNameBtn.addEventListener('click', () => {
 // ---------- Grid rendering ----------
 
 function render() {
+  updateBodyClasses();
   gridEl.innerHTML = '';
 
   // Init/delete and copy/paste can reach further than the plain 1-cell
