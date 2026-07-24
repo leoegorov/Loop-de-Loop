@@ -20,7 +20,6 @@ function sanitizeFilename(name) {
 const body = document.body;
 const modeSelect = document.getElementById('modeSelect');
 const gridEl = document.getElementById('grid');
-const zoomLayer = document.getElementById('zoomLayer');
 const startOverlay = document.getElementById('startOverlay');
 const startBtn = document.getElementById('startBtn');
 const startError = document.getElementById('startError');
@@ -51,8 +50,38 @@ let globalNextBoundary = null;
 
 let tracks = [];             // array of track objects, each with a row/col position
 let clipboard = null;
-let zoomedId = null;
 let dragSrcId = null;
+
+// ---------- Zoom (click-position-based cell scaling) ----------
+
+const ZOOM_MIN_PX = 50;
+const ZOOM_MAX_PX = 500;
+const ZOOM_FACTOR = 1.3;
+const ZOOM_CENTER_RADIUS = 0.5; // fraction of half-screen; inside = zoom in, outside = zoom out
+const INITDEL_REACH = 5;        // Chebyshev distance within which empty cells can be initialized/pasted into
+
+let cellSizePx = null; // null until first resolved from the responsive CSS default
+
+function currentCellSizePx() {
+  if (cellSizePx !== null) return cellSizePx;
+  const el = gridEl.querySelector('.cell');
+  return el ? el.getBoundingClientRect().width : 180;
+}
+
+function setCellSizePx(px) {
+  cellSizePx = Math.max(ZOOM_MIN_PX, Math.min(ZOOM_MAX_PX, px));
+  body.style.setProperty('--cell-size', cellSizePx + 'px');
+}
+
+function zoomDistance(clientX, clientY) {
+  const dx = (clientX - window.innerWidth / 2) / (window.innerWidth / 2);
+  const dy = (clientY - window.innerHeight / 2) / (window.innerHeight / 2);
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function isZoomInAt(clientX, clientY) {
+  return zoomDistance(clientX, clientY) < ZOOM_CENTER_RADIUS;
+}
 
 function mod(a, n) { return ((a % n) + n) % n; }
 function gcd(a, b) { a = Math.abs(a); b = Math.abs(b); while (b) { [a, b] = [b, a % b]; } return a || 1; }
@@ -371,18 +400,6 @@ function hardStop(track) {
   track.playing = false;
 }
 
-function resetTrack(track) {
-  hardStop(track);
-  track.buffer = null;
-  track.lengthUnits = null;
-  track.autoPhaseOffset = 0;
-  track.userOffset = 0;
-  track.speedFactor = 1;
-  track.volume = 1;
-  if (track.gainNode) track.gainNode.gain.value = 1;
-  track.pausedPhase = 0;
-}
-
 function removeTrack(track) {
   hardStop(track);
   if (track.gainNode) { try { track.gainNode.disconnect(); } catch (e) {} }
@@ -411,12 +428,20 @@ function gridBounds() {
   return { minR, maxR, minC, maxC };
 }
 
+function isReachableSlot(row, col) {
+  for (const t of tracks) {
+    if (Math.max(Math.abs(t.row - row), Math.abs(t.col - col)) <= INITDEL_REACH) return true;
+  }
+  return false;
+}
+
 // ---------- UI: mode handling ----------
 
 function setMode(mode) {
   currentMode = mode;
   modeSelect.value = mode;
   body.className = 'mode-' + mode;
+  if (mode !== 'zoom') body.style.cursor = '';
   render();
 }
 
@@ -427,6 +452,21 @@ window.addEventListener('keydown', (e) => {
   if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
   const key = e.key.toLowerCase();
   if (SHORTCUTS[key]) setMode(SHORTCUTS[key]);
+});
+
+// Zoom mode: clicking near the middle of the screen zooms in (fewer,
+// larger cells); clicking near the edges zooms out (more, smaller cells).
+// The cursor previews which one a click will do.
+window.addEventListener('mousemove', (e) => {
+  if (currentMode !== 'zoom') return;
+  body.style.cursor = isZoomInAt(e.clientX, e.clientY) ? 'zoom-in' : 'zoom-out';
+});
+gridEl.addEventListener('click', (e) => {
+  if (currentMode !== 'zoom') return;
+  const zoomIn = isZoomInAt(e.clientX, e.clientY);
+  const px = currentCellSizePx();
+  setCellSizePx(zoomIn ? px * ZOOM_FACTOR : px / ZOOM_FACTOR);
+  render();
 });
 
 // ---------- Project menu modal ----------
@@ -453,22 +493,12 @@ randomNameBtn.addEventListener('click', () => {
 
 function render() {
   gridEl.innerHTML = '';
-  zoomLayer.innerHTML = '';
 
-  if (zoomedId !== null) {
-    const track = tracks.find((t) => t.id === zoomedId);
-    if (!track) { zoomedId = null; } else {
-      gridEl.hidden = true;
-      zoomLayer.hidden = false;
-      zoomLayer.appendChild(buildModuleCell(track));
-      return;
-    }
-  }
-  gridEl.hidden = false;
-  zoomLayer.hidden = true;
-
+  // Init/delete and copy/paste can reach further than the plain 1-cell
+  // padding used elsewhere (which just gives drag-to-extend room).
+  const pad = (currentMode === 'initdel' || currentMode === 'copypaste') ? INITDEL_REACH : 1;
   const { minR, maxR, minC, maxC } = gridBounds();
-  const r0 = minR - 1, r1 = maxR + 1, c0 = minC - 1, c1 = maxC + 1;
+  const r0 = minR - pad, r1 = maxR + pad, c0 = minC - pad, c1 = maxC + pad;
   const rows = r1 - r0 + 1, cols = c1 - c0 + 1;
   gridEl.style.gridTemplateColumns = `repeat(${cols}, var(--cell-size))`;
   gridEl.style.gridTemplateRows = `repeat(${rows}, var(--cell-size))`;
@@ -477,7 +507,7 @@ function render() {
   for (let r = r0; r <= r1; r++) {
     for (let c = c0; c <= c1; c++) {
       const track = trackAt(r, c);
-      const cellEl = track ? buildModuleCell(track) : buildSlotCell(r, c);
+      const cellEl = track ? buildModuleCell(track) : buildSlotCell(r, c, isReachableSlot(r, c));
       cellEl.style.gridRow = String(r - r0 + 1);
       cellEl.style.gridColumn = String(c - c0 + 1);
       gridEl.appendChild(cellEl);
@@ -508,18 +538,26 @@ function setupDragTarget(cell, getRow, getCol) {
   });
 }
 
-function buildSlotCell(row, col) {
+function buildSlotCell(row, col, reachable) {
   const cell = document.createElement('div');
-  cell.className = 'cell slot';
+  cell.className = 'cell slot' + (reachable ? ' reachable' : '');
   cell.setAttribute('role', 'listitem');
   cell.draggable = false;
   setupDragTarget(cell, () => row, () => col);
   cell.addEventListener('click', () => {
-    if (!audioCtx || currentMode !== 'initdel') return;
-    const t = makeTrack(row, col);
-    ensureGain(t);
-    tracks.push(t);
-    render();
+    if (!audioCtx || !reachable) return;
+    if (currentMode === 'initdel') {
+      const t = makeTrack(row, col);
+      ensureGain(t);
+      tracks.push(t);
+      render();
+    } else if (currentMode === 'copypaste' && clipboard) {
+      const t = makeTrack(row, col);
+      tracks.push(t);
+      pasteInto(t, clipboard);
+      clipboard = null;
+      render();
+    }
   });
   return cell;
 }
@@ -753,8 +791,7 @@ function onCellClick(track) {
       render();
       break;
     case 'initdel':
-      if (track.buffer) resetTrack(track);
-      else removeTrack(track);
+      removeTrack(track);
       render();
       break;
     case 'copypaste':
@@ -766,10 +803,6 @@ function onCellClick(track) {
       } else if (track.buffer) {
         clipboard = { sourceId: track.id, data: snapshotTrack(track) };
       }
-      render();
-      break;
-    case 'zoom':
-      zoomedId = zoomedId === track.id ? null : track.id;
       render();
       break;
     default:

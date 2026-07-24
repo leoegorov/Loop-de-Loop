@@ -21,11 +21,10 @@ Import. Export uses the project name for every downloaded file.
 
 ## Grid
 
-The grid is a 2D canvas that always shows one empty ring of cells around
-whatever's in use, in every direction — drag a module toward an edge and more
-space appears past it, so the layout can grow up/down/left/right, not just
-to the right of the last module. Modules can be dragged to any cell,
-occupied or empty (dragging onto an occupied cell swaps the two).
+The grid is a 2D canvas, not a fixed-size board — drag a module toward an
+edge and more space appears past it, so the layout can grow up/down/left/
+right, not just to the right of the last module. Modules can be dragged to
+any cell, occupied or empty (dragging onto an occupied cell swaps the two).
 
 ## Modes
 
@@ -36,12 +35,17 @@ each loop module behaves differently per mode:
 |---|---|---|---|
 | Play/Pause | `p` | green | toggle play/stop |
 | Play/Rec | `r` | red | toggle record (first press) / play (after) |
-| Init/Delete | `i` | pink | click any empty cell to add a module there; click a filled button to clear it; click an empty button to remove the module. The "+" on empty cells and the hover highlight on in-use cells (showing what's about to be cleared/removed) only appear in this mode |
+| Init/Delete | `i` | pink | click any empty cell within reach to add a module there; click any existing module (recorded or still empty) to remove it completely in one click |
 | Offset | `o` | yellow | drag the outer handle to shift a track's start point |
 | Speed | `s` | orange | drag the strobe handle to change playback rate |
 | Volume | `v` | purple | vertical slider per module |
-| Copy/Paste | `c` | blue | click a module to copy, click another to paste |
-| Zoom | `z` | light blue | click a module to fill the viewport, click again to exit |
+| Copy/Paste | `c` | blue | click a module to copy; click another module, or any empty cell within reach, to paste (pasting into an empty cell creates the module there directly, no need to init it first) |
+| Zoom | `z` | light blue | click near the middle of the screen to zoom in (fewer, larger cells), click near the edges to zoom out (more, smaller cells) — the cursor previews zoom-in/zoom-out before you click |
+
+Init/Delete and Copy/Paste can reach any empty cell within 5 cells (in any
+direction) of an existing module — that's the region shown with a dashed
+outline and "+" in Init/Delete mode. Outside Init/Delete mode, empty cells
+have no outline at all; they're just empty space.
 
 All loop lengths are quantized to whole multiples of the first recorded loop,
 so every module realigns to its "12 o'clock" start in sync.
