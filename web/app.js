@@ -1,7 +1,9 @@
 import { encodeWavMono16, arrayBufferToBase64, base64ToArrayBuffer } from './wav.js';
 
-const MODES = ['playpause', 'playrec', 'initdel', 'offset', 'speed', 'volume', 'copypaste', 'zoom'];
-const SHORTCUTS = { p: 'playpause', r: 'playrec', i: 'initdel', o: 'offset', s: 'speed', v: 'volume', c: 'copypaste', z: 'zoom' };
+const MODES = ['playpause', 'playrec', 'initdel', 'trim', 'volume', 'copypaste', 'zoom'];
+const SHORTCUTS = { p: 'playpause', r: 'playrec', i: 'initdel', t: 'trim', v: 'volume', c: 'copypaste', z: 'zoom' };
+const MIN_TRIM = 0.02;  // smallest trim window, as a fraction of the buffer
+const MAX_TRIM_SPAN = 4; // largest trim window, in buffer-lengths (so up to 4x speed)
 
 const NAME_ADJ = ['velvet', 'crimson', 'hollow', 'silent', 'neon', 'dusty', 'fractal', 'loose', 'tidal', 'amber', 'wild', 'glass', 'copper', 'faint', 'solar', 'lunar', 'static', 'warm', 'cold', 'bright'];
 const NAME_NOUN = ['echo', 'loop', 'groove', 'pulse', 'drift', 'signal', 'chorus', 'tape', 'delay', 'fuzz', 'current', 'orbit', 'ember', 'wave', 'beat', 'riff', 'haze', 'spark', 'tempo', 'vinyl'];
@@ -112,6 +114,43 @@ function gcd(a, b) { a = Math.abs(a); b = Math.abs(b); while (b) { [a, b] = [b, 
 function lcm2(a, b) { return (a / gcd(a, b)) * b; }
 function lcmAll(nums) { return nums.reduce((acc, n) => lcm2(acc, n), 1); }
 
+// Describes an SVG arc path from startFrac to endFrac (endFrac >= startFrac,
+// both in absolute "laps" - can exceed 1 or be negative) on a circle of
+// radius r centered at (50,50), 0 = 12 o'clock, increasing clockwise. Drawn
+// as an explicit path rather than a dasharray trick, since a dasharray's
+// period has to match the browser's own rendered path length exactly (which
+// can drift slightly from a hand-computed 2*pi*r) or a faint duplicate strip
+// shows up at the seam.
+function describeArc(startFrac, endFrac, r) {
+  const span = endFrac - startFrac;
+  if (span <= 1e-6) return '';
+  const toXY = (frac) => {
+    const a = mod(frac, 1) * 2 * Math.PI;
+    return [50 + r * Math.sin(a), 50 - r * Math.cos(a)];
+  };
+  if (span >= 1 - 1e-6) {
+    // A single <path> arc command can't express a full 360 degrees, so a
+    // full (or more than full) lap is drawn as two half-circle arcs.
+    const [x1, y1] = toXY(startFrac);
+    const [x2, y2] = toXY(startFrac + 0.5);
+    return `M ${x1} ${y1} A ${r} ${r} 0 1 1 ${x2} ${y2} A ${r} ${r} 0 1 1 ${x1} ${y1}`;
+  }
+  const [sx, sy] = toXY(startFrac);
+  const [ex, ey] = toXY(endFrac);
+  const largeArc = span > 0.5 ? 1 : 0;
+  return `M ${sx} ${sy} A ${r} ${r} 0 ${largeArc} 1 ${ex} ${ey}`;
+}
+
+// The trim window [trimStart, trimEnd] (fractions of the buffer) is what
+// plays back once per the track's fixed nominal cycle (lengthUnits *
+// unitLength). Since that cycle duration never changes, a wider window means
+// more audio has to fit in the same time -> faster; a narrower one -> slower.
+function updateSpeedFactor(track) {
+  if (!track.buffer || !unitLength) { track.speedFactor = 1; return; }
+  const trimmedDur = Math.max((track.trimEnd - track.trimStart) * track.buffer.duration, 0.001);
+  track.speedFactor = trimmedDur / (track.lengthUnits * unitLength);
+}
+
 function makeTrack(row, col) {
   return {
     id: uidCounter++,
@@ -119,8 +158,9 @@ function makeTrack(row, col) {
     buffer: null,
     lengthUnits: null,
     autoPhaseOffset: 0,
-    userOffset: 0,
-    speedFactor: 1,
+    trimStart: 0,     // fraction of buffer duration (0..1), start of the played-back section
+    trimEnd: 1,       // fraction of buffer duration (0..1), end of the played-back section
+    speedFactor: 1,   // derived from the trim window's width; see updateSpeedFactor()
     volume: 1,
     gainNode: null,
     sourceNode: null,
@@ -129,6 +169,7 @@ function makeTrack(row, col) {
     recordChunks: [],
     recordStartTime: null,
     loopAnchorTime: null,
+    nextOwnBoundary: null,    // set only when the trim window wraps past the buffer's end
     pausedPhase: 0,
     queuedAction: null,       // null | 'play' | 'stopPlay' | 'record' | 'endRecord'
     queuedTime: null,
@@ -224,32 +265,77 @@ function resyncAll(atTime) {
   globalNextBoundary = anchor + megacycle;
 }
 
+// A trim window can be wider than one buffer-length (speedFactor > 1, reading
+// past the buffer's end and wrapping), or simply sit somewhere that wraps
+// after a span-drag (e.g. trimStart=1.2). Either way, if the *wrapped*
+// window crosses the buffer's physical end, Web Audio's loopStart/loopEnd
+// can't express it directly (they can only bound a single sub-range), so
+// that case loops the whole buffer instead and gets explicitly restarted
+// every one of the track's own nominal cycles to stay aligned - see
+// trackNextOwnBoundary().
+function trackWrapsBuffer(track) {
+  const span = track.trimEnd - track.trimStart;
+  return mod(track.trimStart, 1) + span > 1 + 1e-9;
+}
+
+function trackNextOwnBoundary(track, atTime) {
+  const nominalDuration = track.lengthUnits * unitLength;
+  const k = Math.floor((atTime - masterStartTime) / nominalDuration + 1e-9) + 1;
+  return masterStartTime + k * nominalDuration;
+}
+
 function scheduleTrackAt(track, atTime, anchor) {
   ensureGain(track);
   const bufDur = track.buffer.duration;
-  const phase = mod((atTime - anchor) * track.speedFactor + track.autoPhaseOffset + track.userOffset, bufDur);
+  const span = track.trimEnd - track.trimStart;
+  const trimmedDur = Math.max(span * bufDur, 0.001);
+  const phaseInTrim = mod((atTime - anchor) * track.speedFactor + track.autoPhaseOffset, trimmedDur);
+  const absolutePos = track.trimStart + phaseInTrim / bufDur;
+  const readPos = mod(absolutePos, 1) * bufDur;
+
   if (track.sourceNode) {
     try { track.sourceNode.stop(atTime); } catch (e) { /* already stopped */ }
   }
   const src = audioCtx.createBufferSource();
   src.buffer = track.buffer;
   src.loop = true;
-  src.loopStart = 0;
-  src.loopEnd = bufDur;
+  const wraps = trackWrapsBuffer(track);
+  if (wraps) {
+    src.loopStart = 0;
+    src.loopEnd = bufDur;
+    track.nextOwnBoundary = trackNextOwnBoundary(track, atTime);
+  } else {
+    const wrappedStart = mod(track.trimStart, 1);
+    src.loopStart = wrappedStart * bufDur;
+    src.loopEnd = (wrappedStart + span) * bufDur;
+    track.nextOwnBoundary = null;
+  }
   src.playbackRate.value = track.speedFactor;
   src.connect(track.gainNode);
-  src.start(atTime, phase);
+  src.start(atTime, readPos);
   track.sourceNode = src;
   track.loopAnchorTime = anchor;
 }
 
-function trackPhase01(track, now) {
+// Absolute (unwrapped) position, in buffer-lengths, of where playback
+// currently is within the trim window - e.g. 1.3 means "30% into the second
+// pass through the buffer". Used for the ring's visual arc, which needs to
+// know how far past trimStart the current position is, not just its wrapped
+// buffer offset.
+function trackAbsolutePosition(track, now) {
   if (!track.buffer) return 0;
   const bufDur = track.buffer.duration;
   if (!track.playing) return track.pausedPhase / bufDur;
   const anchor = track.loopAnchorTime !== null ? track.loopAnchorTime : now;
-  const phase = mod((now - anchor) * track.speedFactor + track.autoPhaseOffset + track.userOffset, bufDur);
-  return phase / bufDur;
+  const span = track.trimEnd - track.trimStart;
+  const trimmedDur = Math.max(span * bufDur, 0.001);
+  const phaseInTrim = mod((now - anchor) * track.speedFactor + track.autoPhaseOffset, trimmedDur);
+  return track.trimStart + phaseInTrim / bufDur;
+}
+
+function trackPhase01(track, now) {
+  if (!track.buffer) return 0;
+  return mod(trackAbsolutePosition(track, now), 1);
 }
 
 // ---------- Immediate actions (only ever called at the exact resolved time) ----------
@@ -318,8 +404,9 @@ function finalizeRecording(track, atTime) {
 
   track.buffer = audioBuffer;
   track.lengthUnits = lengthUnits;
-  track.userOffset = 0;
-  track.speedFactor = 1;
+  track.trimStart = 0;
+  track.trimEnd = 1;
+  updateSpeedFactor(track);
   track.queuedLengthUnits = null;
 
   doStartPlayback(track, atTime);
@@ -598,7 +685,7 @@ function buildModuleCell(track) {
   cell.className = 'cell module' + (track.buffer ? '' : ' empty') + (clipboard && clipboard.sourceId === track.id ? ' copied' : '');
   cell.setAttribute('role', 'listitem');
 
-  cell.draggable = !['offset', 'speed', 'volume'].includes(currentMode);
+  cell.draggable = !['trim', 'volume'].includes(currentMode);
   cell.addEventListener('dragstart', () => { dragSrcId = track.id; cell.classList.add('dragging'); });
   cell.addEventListener('dragend', () => { cell.classList.remove('dragging'); });
   setupDragTarget(cell, () => track.row, () => track.col);
@@ -650,12 +737,13 @@ function buildModuleSvg(track) {
   const bg = svgEl('circle', { class: 'ring-bg', cx: 50, cy: 50, r: 42 });
   svg.appendChild(bg);
 
-  const circumference = 2 * Math.PI * 42;
-  const pos = svgEl('circle', {
-    class: 'ring-pos', cx: 50, cy: 50, r: 42,
-    'stroke-dasharray': String(circumference),
-    'stroke-dashoffset': String(circumference),
-  });
+  if (currentMode === 'trim' && track.buffer) {
+    const spanArc = svgEl('path', { class: 'trim-span' });
+    svg.appendChild(spanArc);
+    buildTrimHandles(svg, track, spanArc);
+  }
+
+  const pos = svgEl('path', { class: 'ring-pos' });
   svg.appendChild(pos);
 
   // Quarter-cycle tick marks: shown while recording to hint that the loop
@@ -672,81 +760,158 @@ function buildModuleSvg(track) {
   });
   svg.appendChild(ticks);
 
-  let strobeGroup = null;
-  if (currentMode === 'speed' && track.buffer) {
-    strobeGroup = svgEl('g', { class: 'speed-strobe' });
-    const n = 24;
-    for (let i = 0; i < n; i++) {
-      const a = (i / n) * Math.PI * 2;
-      const r1 = 30, r2 = 36;
-      const x1 = 50 + r1 * Math.sin(a), y1 = 50 - r1 * Math.cos(a);
-      const x2 = 50 + r2 * Math.sin(a), y2 = 50 - r2 * Math.cos(a);
-      strobeGroup.appendChild(svgEl('line', { class: 'speed-tick', x1, y1, x2, y2 }));
-    }
-    svg.appendChild(strobeGroup);
-  }
-
   const core = svgEl('circle', { class: 'core-circle core-btn', cx: 50, cy: 50, r: 22 });
   svg.appendChild(core);
 
   const label = svgEl('text', { class: 'core-label', x: 50, y: 52 });
   svg.appendChild(label);
 
-  if (currentMode === 'offset' && track.buffer) {
-    const handle = svgEl('circle', { class: 'offset-handle', cx: 50, cy: 8, r: 5 });
-    svg.appendChild(handle);
-    attachDrag(svg, handle, (angleDeg) => {
-      const frac = angleDeg / 360;
-      track.userOffset = frac * track.buffer.duration;
-      if (track.playing) resyncAll();
-    });
-  }
-
-  if (currentMode === 'speed' && track.buffer) {
-    const speedHandle = svgEl('circle', { class: 'offset-handle', cx: 50, cy: 14, r: 5 });
-    svg.appendChild(speedHandle);
-    attachDrag(svg, speedHandle, (angleDeg) => {
-      let signed = angleDeg > 180 ? angleDeg - 360 : angleDeg;
-      signed = Math.max(-180, Math.min(180, signed));
-      track.speedFactor = Math.pow(2, signed / 90);
-      if (track.playing) resyncAll();
-    });
-  }
-
-  track.el = { svg, pos, circumference, strobeGroup, core, label, ticks };
+  track.el = { svg, pos, core, label, ticks };
   applyVisualState(track, audioCtx ? audioCtx.currentTime : 0);
   return svg;
 }
 
-function attachDrag(svg, handle, onAngle) {
+// Trim mode: a yellow span between two draggable handles ('[' and ']') marks
+// the section of the buffer that plays back once per the track's fixed
+// nominal cycle. Dragging a handle resizes the window from that end (which
+// changes the derived speed); dragging the span translates both handles
+// together, keeping the window's width - and therefore the speed - fixed.
+function buildTrimHandles(svg, track, spanArc) {
+  const startHandle = svgEl('text', { class: 'trim-handle', x: 50, y: 8 });
+  startHandle.textContent = '[';
+  const endHandle = svgEl('text', { class: 'trim-handle', x: 50, y: 8 });
+  endHandle.textContent = ']';
+
+  function placeHandle(el, frac) {
+    const angleDeg = mod(frac, 1) * 360;
+    const angle = (angleDeg * Math.PI) / 180;
+    const x = 50 + 42 * Math.sin(angle);
+    const y = 50 - 42 * Math.cos(angle);
+    el.setAttribute('x', String(x));
+    el.setAttribute('y', String(y));
+    // Rotate so the glyph's bottom edge always faces the circle's center,
+    // like a spoke, instead of staying upright as it moves around the ring.
+    el.setAttribute('transform', `rotate(${angleDeg} ${x} ${y})`);
+  }
+
+  function redraw() {
+    spanArc.setAttribute('d', describeArc(track.trimStart, track.trimEnd, 42));
+    placeHandle(startHandle, track.trimStart);
+    placeHandle(endHandle, track.trimEnd);
+  }
+  redraw();
+
+  // Rotary drags accumulate the continuous (unwrapped) angle turned, rather
+  // than snapping to an absolute 0-360 reading, so a handle can be dragged
+  // more than a full turn away from the other one (span > 1 buffer-length,
+  // i.e. faster than 1.00x).
+  attachRotaryDrag(svg, startHandle, () => track.trimStart, (value) => {
+    let start = Math.min(value, track.trimEnd - MIN_TRIM);
+    start = Math.max(start, track.trimEnd - MAX_TRIM_SPAN);
+    track.trimStart = start;
+    updateSpeedFactor(track);
+    if (track.playing) resyncAll();
+    redraw();
+  });
+
+  attachRotaryDrag(svg, endHandle, () => track.trimEnd, (value) => {
+    let end = Math.max(value, track.trimStart + MIN_TRIM);
+    end = Math.min(end, track.trimStart + MAX_TRIM_SPAN);
+    track.trimEnd = end;
+    updateSpeedFactor(track);
+    if (track.playing) resyncAll();
+    redraw();
+  });
+
+  let dragStartTrimStart = 0;
+  let dragStartTrimEnd = 1;
+  attachSpanDrag(svg, spanArc,
+    () => { dragStartTrimStart = track.trimStart; dragStartTrimEnd = track.trimEnd; },
+    (deltaFrac) => {
+      const span = dragStartTrimEnd - dragStartTrimStart;
+      track.trimStart = dragStartTrimStart + deltaFrac;
+      track.trimEnd = track.trimStart + span;
+      // Span width (and therefore speed) is unchanged by this drag.
+      if (track.playing) resyncAll();
+      redraw();
+    });
+
+  svg.appendChild(startHandle);
+  svg.appendChild(endHandle);
+}
+
+// Like attachDrag, but reports a continuously accumulating (unwrapped) value
+// instead of an absolute 0-360 angle, so dragging past the seam keeps going
+// instead of snapping back - needed so a handle can be wound more than a
+// full turn away from the other one.
+function attachRotaryDrag(svg, target, getValue, onValue) {
   let dragging = false;
-  const move = (clientX, clientY) => {
+  let lastAngle = 0;
+  let value = 0;
+  const angleAt = (clientX, clientY) => {
     const rect = svg.getBoundingClientRect();
     const cx = rect.left + rect.width / 2;
     const cy = rect.top + rect.height / 2;
-    const dx = clientX - cx;
-    const dy = clientY - cy;
-    let angle = Math.atan2(dx, -dy) * (180 / Math.PI);
-    angle = mod(angle, 360);
-    handle.setAttribute('cx', 50 + 42 * Math.sin(angle * Math.PI / 180));
-    handle.setAttribute('cy', 50 - 42 * Math.cos(angle * Math.PI / 180));
-    onAngle(angle);
+    return mod(Math.atan2(clientX - cx, -(clientY - cy)) * (180 / Math.PI), 360);
   };
   const onDown = (e) => {
     e.stopPropagation();
     dragging = true;
+    value = getValue();
     const pt = e.touches ? e.touches[0] : e;
-    move(pt.clientX, pt.clientY);
+    lastAngle = angleAt(pt.clientX, pt.clientY);
     e.preventDefault();
   };
   const onMove = (e) => {
     if (!dragging) return;
     const pt = e.touches ? e.touches[0] : e;
-    move(pt.clientX, pt.clientY);
+    const angle = angleAt(pt.clientX, pt.clientY);
+    let delta = angle - lastAngle;
+    if (delta > 180) delta -= 360;
+    if (delta < -180) delta += 360;
+    value += delta / 360;
+    lastAngle = angle;
+    onValue(value);
   };
   const onUp = () => { dragging = false; };
-  handle.addEventListener('mousedown', onDown);
-  handle.addEventListener('touchstart', onDown, { passive: false });
+  target.addEventListener('mousedown', onDown);
+  target.addEventListener('touchstart', onDown, { passive: false });
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('touchmove', onMove, { passive: false });
+  window.addEventListener('mouseup', onUp);
+  window.addEventListener('touchend', onUp);
+}
+
+// Like attachDrag, but reports the angular delta from where the drag began
+// instead of an absolute angle - used to translate a span without resizing it.
+function attachSpanDrag(svg, target, onStart, onDeltaFrac) {
+  let dragging = false;
+  let startAngle = 0;
+  const angleAt = (clientX, clientY) => {
+    const rect = svg.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    return mod(Math.atan2(clientX - cx, -(clientY - cy)) * (180 / Math.PI), 360);
+  };
+  const onDown = (e) => {
+    e.stopPropagation();
+    dragging = true;
+    onStart();
+    const pt = e.touches ? e.touches[0] : e;
+    startAngle = angleAt(pt.clientX, pt.clientY);
+    e.preventDefault();
+  };
+  const onMove = (e) => {
+    if (!dragging) return;
+    const pt = e.touches ? e.touches[0] : e;
+    let deltaDeg = angleAt(pt.clientX, pt.clientY) - startAngle;
+    if (deltaDeg > 180) deltaDeg -= 360;
+    if (deltaDeg < -180) deltaDeg += 360;
+    onDeltaFrac(deltaDeg / 360);
+  };
+  const onUp = () => { dragging = false; };
+  target.addEventListener('mousedown', onDown);
+  target.addEventListener('touchstart', onDown, { passive: false });
   window.addEventListener('mousemove', onMove);
   window.addEventListener('touchmove', onMove, { passive: false });
   window.addEventListener('mouseup', onUp);
@@ -764,27 +929,29 @@ function applyVisualState(track, now) {
   if (!el) return;
 
   el.core.classList.remove('filled', 'rec-pulse', 'queued-pulse', 'end-queued');
-  let frac = 0;
+  let arcStart = 0;
+  let arcEnd = 0;
   let showTicks = false;
   let labelText = '';
 
   if (track.queuedAction === 'play') {
     el.core.classList.add('queued-pulse');
-    frac = track.buffer ? track.pausedPhase / track.buffer.duration : 0;
+    arcEnd = track.buffer ? track.pausedPhase / track.buffer.duration : 0;
     labelText = '▶ ' + fmtCountdown(now, track.queuedTime);
   } else if (track.queuedAction === 'record') {
     el.core.classList.add('queued-pulse');
     labelText = '● ' + fmtCountdown(now, track.queuedTime);
   } else if (track.queuedAction === 'stopPlay') {
     el.core.classList.add('queued-pulse', 'filled');
-    frac = trackPhase01(track, now);
+    arcStart = track.trimStart;
+    arcEnd = trackAbsolutePosition(track, now);
     labelText = '⏸ ' + fmtCountdown(now, track.queuedTime);
   } else if (track.recording || track.queuedAction === 'endRecord') {
     showTicks = true;
     el.core.classList.add('rec-pulse');
     if (track.queuedAction === 'endRecord') el.core.classList.add('end-queued');
     if (unitLength) {
-      frac = mod(now - track.recordStartTime, unitLength) / unitLength;
+      arcEnd = mod(now - track.recordStartTime, unitLength) / unitLength;
       const elapsedUnits = Math.floor((now - track.recordStartTime) / unitLength) + 1;
       labelText = track.queuedAction === 'endRecord'
         ? 'end ' + fmtCountdown(now, track.queuedTime)
@@ -794,18 +961,18 @@ function applyVisualState(track, now) {
     }
   } else if (track.buffer) {
     el.core.classList.add('filled');
-    frac = trackPhase01(track, now);
-    labelText = currentMode === 'speed' ? track.speedFactor.toFixed(2) + 'x'
+    // The arc grows from trimStart (not 12 o'clock) to the current absolute
+    // (possibly >1, if the window wraps) position - drawing it from 0
+    // instead would show a stray extra sliver alongside the trim span.
+    arcStart = track.trimStart;
+    arcEnd = trackAbsolutePosition(track, now);
+    labelText = currentMode === 'trim' ? track.speedFactor.toFixed(2) + 'x'
       : (track.lengthUnits ? track.lengthUnits + 'u' : '');
   }
 
   el.label.textContent = labelText;
-  el.pos.setAttribute('stroke-dashoffset', String(el.circumference * (1 - frac)));
+  el.pos.setAttribute('d', describeArc(arcStart, arcEnd, 42));
   el.ticks.style.opacity = showTicks ? '1' : '0';
-  if (el.strobeGroup) {
-    const wobble = (track.speedFactor - 1) * now * 60;
-    el.strobeGroup.setAttribute('transform', `rotate(${wobble} 50 50)`);
-  }
 }
 
 // ---------- Cell click dispatch ----------
@@ -846,8 +1013,8 @@ function snapshotTrack(track) {
     buffer: track.buffer,
     lengthUnits: track.lengthUnits,
     autoPhaseOffset: track.autoPhaseOffset,
-    userOffset: track.userOffset,
-    speedFactor: track.speedFactor,
+    trimStart: track.trimStart,
+    trimEnd: track.trimEnd,
     volume: track.volume,
   };
 }
@@ -858,9 +1025,10 @@ function pasteInto(track, clip) {
   track.buffer = d.buffer;
   track.lengthUnits = d.lengthUnits;
   track.autoPhaseOffset = d.autoPhaseOffset;
-  track.userOffset = d.userOffset;
-  track.speedFactor = d.speedFactor;
+  track.trimStart = d.trimStart;
+  track.trimEnd = d.trimEnd;
   track.volume = d.volume;
+  updateSpeedFactor(track);
   ensureGain(track);
   track.gainNode.gain.value = track.volume;
   if (track.buffer) requestPlay(track);
@@ -876,6 +1044,13 @@ function tick() {
     }
     if (masterStartTime !== null && globalNextBoundary !== null && now >= globalNextBoundary) {
       resyncAll(now);
+    }
+    // Tracks whose trim window wraps past the buffer's end need their own,
+    // possibly more frequent, restart to stay aligned - see trackWrapsBuffer().
+    for (const t of tracks) {
+      if (t.playing && t.nextOwnBoundary !== null && now >= t.nextOwnBoundary) {
+        scheduleTrackAt(t, now, masterStartTime);
+      }
     }
     for (const t of tracks) applyVisualState(t, now);
   }
@@ -922,8 +1097,8 @@ exportBtn.addEventListener('click', () => {
         col: t.col,
         lengthUnits: t.lengthUnits,
         autoPhaseOffset: t.autoPhaseOffset,
-        userOffset: t.userOffset,
-        speedFactor: t.speedFactor,
+        trimStart: t.trimStart,
+        trimEnd: t.trimEnd,
         volume: t.volume,
         sampleRate: t.buffer.sampleRate,
         audioBase64: arrayBufferToBase64(wav),
@@ -984,8 +1159,9 @@ importInput.addEventListener('change', async () => {
       track.buffer = audioBuffer;
       track.lengthUnits = entry.lengthUnits;
       track.autoPhaseOffset = entry.autoPhaseOffset;
-      track.userOffset = entry.userOffset;
-      track.speedFactor = entry.speedFactor;
+      track.trimStart = entry.trimStart;
+      track.trimEnd = entry.trimEnd;
+      updateSpeedFactor(track);
       track.volume = entry.volume;
       track.gainNode.gain.value = track.volume;
     }

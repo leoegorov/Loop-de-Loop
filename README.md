@@ -36,8 +36,7 @@ each loop module behaves differently per mode:
 | Play/Pause | `p` | green | toggle play/stop |
 | Play/Rec | `r` | red | toggle record (first press) / play (after) |
 | Init/Delete | `i` | pink | click any empty cell within reach to add a module there; click any existing module (recorded or still empty) to remove it completely in one click |
-| Offset | `o` | yellow | drag the outer handle to shift a track's start point |
-| Speed | `s` | orange | drag the strobe handle to change playback rate |
+| Trim | `t` | yellow | pick the section of the recording that plays back each cycle — see below |
 | Volume | `v` | purple | vertical slider per module |
 | Copy/Paste | `c` | blue | click a module to copy; click another module, or any empty cell within reach, to paste (pasting into an empty cell creates the module there directly, no need to init it first) |
 | Zoom | `z` | light blue | click near the middle of the screen to zoom in (fewer, larger cells), click near the edges to zoom out (more, smaller cells) — the cursor previews zoom-in/zoom-out before you click |
@@ -49,6 +48,24 @@ have no outline at all; they're just empty space.
 
 All loop lengths are quantized to whole multiples of the first recorded loop,
 so every module realigns to its "12 o'clock" start in sync.
+
+### Trim
+
+Two handles sit on the position ring — `[` marks where playback of the
+recording starts, `]` marks where it ends — and rotate as they move so their
+bottom edge always faces the center, like a spoke. The yellow span between
+them is the section that plays back once per the module's fixed cycle
+length. Drag either handle independently to resize the window from that
+side; drag the span itself to slide both handles together without resizing.
+Since the cycle length never changes, a wider window means more audio has to
+fit into the same cycle (faster) and a narrower one means less does
+(slower) — that derived speed is shown in the middle of the button. Dragging
+the span alone never changes it; only resizing a handle does.
+
+A handle can be dragged more than a full turn away from the other one,
+selecting more than one buffer-length per cycle (up to 4x) for speeds above
+1.00x — the window wraps back around the recording, shown as a solid ring
+with a small gap for whatever's left over.
 
 ### Launch quantization
 
